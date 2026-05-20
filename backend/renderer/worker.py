@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from renderer.job_store import JobDictProxy, build_default_store
 from renderer.queue import build_default_queue
+from renderer.storage import LocalStorageBackend, build_default_storage
 
 # Item #13 — `_jobs` is a dict-shaped façade over a JobStore. Default is
 # in-memory (zero behavior change). Set LUMEN_JOBS_DB to opt into SQLite
@@ -139,6 +140,41 @@ _PINNED_INDEX = os.path.join(_LESSONS_DIR, "pinned_index.json")
 _CACHE_LOCK  = threading.Lock()
 _PIN_LOCK    = threading.Lock()
 
+# Item #15 — final lesson MP4s upload through the pluggable storage backend.
+# Default is LocalStorageBackend(_LESSONS_DIR) which mirrors the historical
+# behavior. Set LUMEN_STORAGE_BACKEND=s3 + the LUMEN_S3_* env vars to push to
+# S3/R2 instead. Index files (cache_index.json, pinned_index.json) stay
+# local — they're operational metadata, not user content.
+_storage = build_default_storage(local_base_dir=_LESSONS_DIR)
+
+
+def _lesson_key(lesson_id: str) -> str:
+    """Storage key for a lesson's final MP4 (backend-agnostic)."""
+    return f"{lesson_id}.mp4"
+
+
+def _lesson_url(lesson_id: str) -> str:
+    """URL the frontend can play. Relative for Local, absolute for S3."""
+    return _storage.url_for(_lesson_key(lesson_id))
+
+
+def _lesson_exists(lesson_id: str) -> bool:
+    """True if the storage backend already has this lesson."""
+    return _storage.exists(_lesson_key(lesson_id))
+
+
+def _url_to_lesson_id(url: str) -> str | None:
+    """Extract the lesson_id from a lesson URL (any backend).
+
+    Used to migrate legacy cache_index entries that stored full URLs into
+    the new key-based shape. Returns None when the URL doesn't look like
+    a lesson MP4.
+    """
+    base = os.path.basename(url.split("?", 1)[0])
+    if base.endswith(".mp4"):
+        return base[:-4]
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Lesson render cache
@@ -173,25 +209,33 @@ def _save_cache_index(index: dict) -> None:
 
 
 def _cache_lookup(cache_key: str) -> str | None:
-    """Return cached URL if present AND the underlying file still exists."""
+    """Return cached URL if present AND the lesson is still in storage.
+
+    The index stores either a lesson_id (new shape, Item #15) or a full URL
+    (legacy). Legacy entries are migrated on read.
+    """
     with _CACHE_LOCK:
         index = _load_cache_index()
-        url = index.get(cache_key)
-        if url is None:
+        entry = index.get(cache_key)
+        if entry is None:
             return None
-        full_path = os.path.join(_MEDIA_DIR, url.removeprefix("/media/"))
-        if not os.path.exists(full_path):
+        lesson_id = entry if not (entry.startswith("/") or entry.startswith("http")) \
+                          else _url_to_lesson_id(entry)
+        if not lesson_id or not _lesson_exists(lesson_id):
             # Stale entry — drop it so future runs re-render
             index.pop(cache_key, None)
             _save_cache_index(index)
             return None
-        return url
+        # Always return a freshly-computed URL — accounts for backend swap
+        return _lesson_url(lesson_id)
 
 
-def _cache_store(cache_key: str, url: str) -> None:
+def _cache_store(cache_key: str, lesson_id: str) -> None:
+    """Store a cache entry. Takes a lesson_id (not a URL) so the entry is
+    portable across storage backends."""
     with _CACHE_LOCK:
         index = _load_cache_index()
-        index[cache_key] = url
+        index[cache_key] = lesson_id
         _save_cache_index(index)
 
 
@@ -222,7 +266,8 @@ def pin_video(job_id: str) -> str:
     """Mark a completed job's video as protected from cleanup.
 
     Returns the video URL. Raises ValueError if the job is unknown or not
-    yet done.
+    yet done. The pin index stores a lesson_id (backend-agnostic) so the
+    entry survives a Local→S3 backend swap.
     """
     job = _jobs.get(job_id)
     if job is None:
@@ -232,9 +277,10 @@ def pin_video(job_id: str) -> str:
     url = job.get("url")
     if not url:
         raise ValueError("job has no url")
+    lesson_id = _url_to_lesson_id(url) or job_id
     with _PIN_LOCK:
         index = _load_pinned_index()
-        index[job_id] = url
+        index[job_id] = lesson_id
         _save_pinned_index(index)
     return url
 
@@ -282,29 +328,42 @@ def cleanup_old_jobs(max_age_seconds: int = 3600) -> int:
 
 
 def cleanup_old_lessons(max_count: int = 200, min_age_seconds: int = 120) -> int:
-    """LRU eviction over media/lessons/*.mp4: keep at most max_count files
-    (oldest first by mtime). Two protections:
+    """LRU eviction over media/lessons/*.mp4: keep at most max_count files.
 
-    1. Files referenced in the cache index are NEVER deleted. Cached lessons
-       represent intentional pre-renders (e.g., demo showcase prompts) — they
-       trade disk for instant playback and shouldn't be evicted under
-       routine cleanup.
+    Two protections:
+    1. Files referenced in the cache index are NEVER deleted.
     2. Files newer than min_age_seconds are also protected to avoid racing
        in-flight renders.
 
-    Returns count removed.
+    Item #15: when LUMEN_STORAGE_BACKEND=s3 (or any non-Local backend),
+    this is a no-op. S3 buckets should use lifecycle policies for eviction;
+    we don't enumerate remote objects from inside the request path. Returns
+    the count removed (0 when storage is remote).
     """
+    if not isinstance(_storage, LocalStorageBackend):
+        return 0
     if not os.path.isdir(_LESSONS_DIR):
         return 0
 
-    # Collect cache-referenced AND user-pinned file paths (sacred).
+    # Collect cache-referenced AND user-pinned lesson IDs (sacred).
     with _CACHE_LOCK:
         cache_index = _load_cache_index()
     with _PIN_LOCK:
         pin_index = _load_pinned_index()
-    pinned = {
-        os.path.realpath(os.path.join(_MEDIA_DIR, url.removeprefix("/media/")))
-        for url in list(cache_index.values()) + list(pin_index.values())
+
+    def _resolve_lesson_id(entry: str) -> str | None:
+        if entry.startswith("/") or entry.startswith("http"):
+            return _url_to_lesson_id(entry)
+        return entry
+
+    protected_ids = set()
+    for entry in list(cache_index.values()) + list(pin_index.values()):
+        lid = _resolve_lesson_id(entry)
+        if lid:
+            protected_ids.add(lid)
+    protected_paths = {
+        os.path.realpath(os.path.join(_LESSONS_DIR, f"{lid}.mp4"))
+        for lid in protected_ids
     }
 
     files = []
@@ -312,7 +371,7 @@ def cleanup_old_lessons(max_count: int = 200, min_age_seconds: int = 120) -> int
         if not entry.endswith(".mp4"):
             continue
         path = os.path.join(_LESSONS_DIR, entry)
-        if os.path.realpath(path) in pinned:
+        if os.path.realpath(path) in protected_paths:
             continue
         try:
             files.append((os.path.getmtime(path), path))
@@ -605,35 +664,37 @@ def _run_lesson(lesson_id: str, steps: list):
             }
             return
 
-    # Single step — copy into lessons/ so the cache has a stable path that
+    # Single step — copy into storage so the cache has a stable URL that
     # survives cleanup_old_jobs() removing the original per-job dir.
     if len(step_job_ids) == 1:
         src_url  = _jobs[step_job_ids[0]]["url"]
         src_path = os.path.join(_MEDIA_DIR, src_url.removeprefix("/media/"))
-        os.makedirs(_LESSONS_DIR, exist_ok=True)
-        dst_path = os.path.join(_LESSONS_DIR, f"{lesson_id}.mp4")
         try:
-            shutil.copyfile(src_path, dst_path)
-            final_url = f"/media/lessons/{lesson_id}.mp4"
-        except OSError:
-            # Fall back to the original URL if copy fails — caching skipped.
+            final_url = _storage.put(src_path, _lesson_key(lesson_id))
+            cached = True
+        except Exception as exc:
+            # Fall back to the original URL if upload fails — caching skipped.
+            print(f"[worker] storage.put failed (single-step): {exc}")
             final_url = src_url
+            cached = False
         _jobs[lesson_id] = {"status": "done", "url": final_url, "error": None,
                             "progress": 1.0, "stage": "done"}
-        if final_url.startswith("/media/lessons/"):
-            _cache_store(cache_key, final_url)
+        if cached:
+            _cache_store(cache_key, lesson_id)
         return
 
     # Multi-step: announce stitching stage before invoking ffmpeg
     _jobs[lesson_id]["stage"] = "stitching"
 
-    # Collect video paths in submission order then stitch
+    # Collect video paths in submission order then stitch into a local tmp
+    # file before uploading via storage.put(). We can't stitch directly into
+    # S3 — ffmpeg needs a local target.
     video_paths = [
         os.path.join(_MEDIA_DIR, _jobs[jid]["url"].removeprefix("/media/"))
         for jid in step_job_ids
     ]
-    os.makedirs(_LESSONS_DIR, exist_ok=True)
-    output_path = os.path.join(_LESSONS_DIR, f"{lesson_id}.mp4")
+    os.makedirs(_TEMP_DIR, exist_ok=True)
+    output_path = os.path.join(_TEMP_DIR, f"{lesson_id}.mp4")
 
     try:
         stitch_videos(video_paths, output_path)
@@ -652,10 +713,30 @@ def _run_lesson(lesson_id: str, steps: list):
     except Exception as exc:
         print(f"[worker] TTS pipeline raised (continuing without audio): {exc}")
 
-    final_url = f"/media/lessons/{lesson_id}.mp4"
+    # Upload the (possibly muxed) stitched file via the storage backend.
+    try:
+        final_url = _storage.put(output_path, _lesson_key(lesson_id))
+    except Exception as exc:
+        _jobs[lesson_id] = {"status": "error", "url": None,
+                            "error": f"storage upload failed: {exc}",
+                            "progress": _jobs[lesson_id].get("progress", 0.95),
+                            "stage": "error"}
+        return
+    finally:
+        # Don't leak temp stitch files even if upload failed
+        try:
+            if os.path.exists(output_path) and isinstance(_storage, LocalStorageBackend):
+                # LocalStorageBackend.put() copied into _LESSONS_DIR; the
+                # temp copy is redundant.
+                os.remove(output_path)
+            elif os.path.exists(output_path):
+                os.remove(output_path)
+        except OSError:
+            pass
+
     _jobs[lesson_id] = {"status": "done", "url": final_url, "error": None,
                         "progress": 1.0, "stage": "done"}
-    _cache_store(cache_key, final_url)
+    _cache_store(cache_key, lesson_id)
 
 
 def _maybe_apply_tts(lesson_id: str, steps: list, stitched_path: str) -> None:

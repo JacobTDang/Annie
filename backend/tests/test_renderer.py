@@ -129,6 +129,8 @@ def test_aggregate_progress_sets_rendering_x_of_n(tmp_path, monkeypatch):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_pin_video_writes_to_index(tmp_path, monkeypatch):
+    """Item #15 refactor: the pin index now stores lesson_id (backend-
+    agnostic) rather than the full URL."""
     monkeypatch.setattr("renderer.worker._PINNED_INDEX", str(tmp_path / "pinned_index.json"))
     monkeypatch.setattr("renderer.worker._LESSONS_DIR", str(tmp_path))
     from renderer.worker import pin_video, _load_pinned_index, _jobs
@@ -138,7 +140,8 @@ def test_pin_video_writes_to_index(tmp_path, monkeypatch):
                      "error": None, "progress": 1.0, "stage": "done"}
     pin_video(job_id)
     index = _load_pinned_index()
-    assert index.get(job_id) == "/media/lessons/test.mp4"
+    # New shape: lesson_id extracted from the URL basename
+    assert index.get(job_id) == "test"
 
 
 def test_unpin_video_removes_from_index(tmp_path, monkeypatch):
