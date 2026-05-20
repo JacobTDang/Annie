@@ -357,6 +357,41 @@ def create_app(testing: bool = False) -> Flask:
     _init_sentry()
     CORS(app)
 
+    # Item #18 — per-IP rate limit on heavy endpoints. 10/day anonymous per
+    # IP by default; disabled in tests so the existing suite isn't perturbed.
+    # Override via LUMEN_RATE_LIMIT="0" to disable, or any integer to override.
+    _rate_limit_max = 0 if testing else int(
+        os.environ.get("LUMEN_RATE_LIMIT", "10"),
+    )
+    _rate_limit_window = int(
+        os.environ.get("LUMEN_RATE_LIMIT_WINDOW_SECONDS", "86400"),
+    )
+
+    def _enforce_rate_limit():
+        """Decorator-less guard returning 429 when exceeded; else None to continue.
+
+        Heavy endpoints call this at the top of their handler. We don't use a
+        before_request hook because most endpoints (health, status polls,
+        media) should NOT be limited.
+        """
+        from rate_limit import check_rate_limit
+        ip = (request.headers.get("X-Forwarded-For", request.remote_addr) or
+              "unknown").split(",")[0].strip()
+        allowed, retry_after = check_rate_limit(
+            key=f"ip:{ip}",
+            max_requests=_rate_limit_max,
+            window_seconds=_rate_limit_window,
+        )
+        if allowed:
+            return None
+        resp = jsonify({
+            "error": "rate limit exceeded",
+            "retry_after_seconds": retry_after,
+        })
+        resp.status_code = 429
+        resp.headers["Retry-After"] = str(retry_after)
+        return resp
+
     # ── existing endpoints ────────────────────────────────────────
 
     @app.get("/health")
@@ -386,6 +421,9 @@ def create_app(testing: bool = False) -> Flask:
 
     @app.post("/ask")
     def ask():
+        limited = _enforce_rate_limit()
+        if limited is not None:
+            return limited
         body = request.get_json(silent=True) or {}
         question = body.get("question", "").strip()
         if not question:
@@ -409,6 +447,9 @@ def create_app(testing: bool = False) -> Flask:
 
     @app.post("/render")
     def render():
+        limited = _enforce_rate_limit()
+        if limited is not None:
+            return limited
         body = request.get_json(silent=True) or {}
         scene = body.get("scene")
         params = body.get("params", {})
@@ -963,6 +1004,9 @@ def create_app(testing: bool = False) -> Flask:
         }
         Response: { "job_id": "..." }   (202)
         """
+        limited = _enforce_rate_limit()
+        if limited is not None:
+            return limited
         from agent.lesson_director import VALID_STYLES
         body = request.get_json(silent=True) or {}
         question = (body.get("question") or "").strip()
@@ -997,6 +1041,9 @@ def create_app(testing: bool = False) -> Flask:
             event: done       data: {}
             event: error      data: {"error": "..."}                 (on failure)
         """
+        limited = _enforce_rate_limit()
+        if limited is not None:
+            return limited
         from agent.lesson_director import (
             VALID_STYLES, narrative_plan as _np, _build_scene_safe,
             _accumulate_elements,
