@@ -3,6 +3,7 @@ import os
 import secrets
 import string
 import threading
+import time
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
@@ -298,6 +299,18 @@ def _new_share_code(existing: dict) -> str:
         code = "".join(secrets.choice(_SHARE_ALPHABET) for _ in range(_SHARE_CODE_LEN))
         if code not in existing:
             return code
+
+
+def _share_parsed(record):
+    """Extract the ``parsed`` payload from a share record.
+
+    Item #31 wraps shares as {parsed, is_public, created_at}; older shares
+    are bare ``parsed`` dicts. This helper returns the parsed payload for
+    both shapes.
+    """
+    if isinstance(record, dict) and "parsed" in record and isinstance(record.get("parsed"), dict):
+        return record["parsed"]
+    return record  # legacy shape — the dict IS the parsed payload
 
 
 _TARGET_MINUTES_MIN = 0.5
@@ -965,7 +978,11 @@ def create_app(testing: bool = False) -> Flask:
     @app.post("/api/share")
     def api_share():
         """Persist a parsed problem under a short code so it can be re-opened
-        via a shareable URL. Returns: {shareCode}."""
+        via a shareable URL. Returns: {shareCode}.
+
+        Item #31: pass ``is_public: true`` in the body to expose the share
+        via /api/public/recent so other users can discover it.
+        """
         body = request.get_json(silent=True) or {}
         parsed = body.get("parsed")
         if not isinstance(parsed, dict) or not parsed.get("scene"):
@@ -978,17 +995,24 @@ def create_app(testing: bool = False) -> Flask:
         if payload_size > 50_000:
             return jsonify({"error": "payload too large (max 50 kB)"}), 413
 
+        is_public = bool(body.get("is_public", False))
+        record = {
+            "parsed": parsed,
+            "is_public": is_public,
+            "created_at": int(time.time()),
+        }
+
         with _SHARES_LOCK:
             shares = _load_shares()
             code = _new_share_code(shares)
-            shares[code] = parsed
+            shares[code] = record
             try:
                 _save_shares(shares)
             except OSError as exc:
                 app.logger.exception("share write failed")
                 return jsonify({"error": "share storage unavailable",
                                 "detail": str(exc)}), 500
-        return jsonify({"shareCode": code})
+        return jsonify({"shareCode": code, "is_public": is_public})
 
     @app.get("/api/share/<code>")
     def api_share_get(code: str):
@@ -997,10 +1021,45 @@ def create_app(testing: bool = False) -> Flask:
             return jsonify({"error": "invalid share code"}), 400
         with _SHARES_LOCK:
             shares = _load_shares()
-            parsed = shares.get(code)
-        if parsed is None:
+            record = shares.get(code)
+        if record is None:
             return jsonify({"error": "share not found"}), 404
+        parsed = _share_parsed(record)
         return jsonify({"parsed": parsed})
+
+    @app.get("/api/public/recent")
+    def api_public_recent():
+        """Return the N most-recent public shares for the discovery page.
+
+        Item #31. Query: ?limit=N (default 30, max 100).
+        Response: { "shares": [{code, title, scene, domain, created_at}, ...] }
+        """
+        try:
+            limit = int(request.args.get("limit", "30"))
+        except (TypeError, ValueError):
+            limit = 30
+        limit = max(1, min(limit, 100))
+
+        with _SHARES_LOCK:
+            shares = _load_shares()
+        out: list[dict] = []
+        for code, record in shares.items():
+            if not isinstance(record, dict):
+                continue
+            if not record.get("is_public"):
+                continue
+            parsed = _share_parsed(record)
+            if not isinstance(parsed, dict):
+                continue
+            out.append({
+                "code": code,
+                "title": parsed.get("title") or parsed.get("scene") or "Untitled",
+                "scene": parsed.get("scene"),
+                "domain": parsed.get("domain"),
+                "created_at": record.get("created_at"),
+            })
+        out.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
+        return jsonify({"shares": out[:limit]})
 
     @app.post("/api/direct-lesson")
     def api_direct_lesson():

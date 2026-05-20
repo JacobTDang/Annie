@@ -38,6 +38,7 @@ import {
   Loader2,
   Bookmark,
   ListMusic,
+  Globe,
 } from "lucide-react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { C, SANS, BODY, EASE } from "./theme";
@@ -56,7 +57,7 @@ import {
 // Types
 // ─────────────────────────────────────────────────────────────
 
-type Route = "home" | "notes" | "animations" | "library" | "playlists" | "import-notes" | "import-animations";
+type Route = "home" | "notes" | "animations" | "library" | "playlists" | "public" | "import-notes" | "import-animations";
 
 interface SideNote {
   id: string;
@@ -1584,6 +1585,7 @@ const Sidebar: React.FC<{
     { key: "animations", label: "Animations", icon: <Play size={16} strokeWidth={1.5} /> },
     { key: "library", label: "Library", icon: <Bookmark size={16} strokeWidth={1.5} /> },
     { key: "playlists", label: "Playlists", icon: <ListMusic size={16} strokeWidth={1.5} /> },
+    { key: "public", label: "Public", icon: <Globe size={16} strokeWidth={1.5} /> },
     { key: "import-notes", label: "Import notes", icon: <FileImage size={16} strokeWidth={1.5} /> },
     { key: "import-animations", label: "Import problem", icon: <Upload size={16} strokeWidth={1.5} /> },
   ];
@@ -3994,6 +3996,7 @@ const ImportError: React.FC<{ message: string; onRetry: () => void }> = ({ messa
 const PasteProblemPage = lazy(() => import('./pages/PasteProblemPage'));
 const LibraryPage = lazy(() => import('./pages/LibraryPage').then(m => ({ default: m.LibraryPage })));
 const PlaylistsPage = lazy(() => import('./pages/PlaylistsPage').then(m => ({ default: m.PlaylistsPage })));
+const PublicLibraryPage = lazy(() => import('./pages/PublicLibraryPage').then(m => ({ default: m.PublicLibraryPage })));
 const EmbedPage = lazy(() => import('./pages/EmbedPage'));
 
 // ─────────────────────────────────────────────────────────────
@@ -4196,6 +4199,15 @@ export default function App() {
                 </div>
               }>
                 <PlaylistsPage />
+              </Suspense>
+            )}
+            {route === "public" && (
+              <Suspense fallback={
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", background: "#1A1A1A" }}>
+                  <Loader2 size={24} className="animate-spin" color="#A0A0A0" strokeWidth={1.5} />
+                </div>
+              }>
+                <PublicLibraryPage />
               </Suspense>
             )}
             {route === "import-notes" && (
