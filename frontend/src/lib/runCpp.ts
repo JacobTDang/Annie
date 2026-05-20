@@ -1,83 +1,76 @@
-// Item #26 follow-up — run C++ in the browser via JSCPP.
+// Item #26 follow-up — run C++ in the browser via JSCPP in a Web Worker.
 //
-// JSCPP is a pure-JS interpreter for a subset of C++14 (cout/cin, strings,
-// vectors, maps, sets, classes, lambdas). It's ~250 KB minified, big enough
-// that we lazy-import it only when the user picks C++ in the editor.
+// Why a worker: JSCPP's `run()` is synchronous, so without isolating it
+// on its own thread, a main-thread `setTimeout` never fires until run()
+// returns — meaning an `int main() { while(true); }` freezes the tab.
+// Worker + `worker.terminate()` actually kills runaway loops.
 //
 // We deliberately did NOT go with wasm-clang (the original "coming soon"
-// plan): the 30 MB toolchain download is too expensive for a feature most
-// users won't touch. JSCPP gets us 90% of LeetCode-style C++ for 1% of the
-// bundle cost. If you need full C++ semantics, fall back to a backend
-// `/api/run-cpp` (not implemented — operator decision).
+// plan): the 30 MB toolchain download is too expensive for a feature
+// most users won't touch. JSCPP gets us 90% of LeetCode-style C++ for
+// 1% of the bundle cost.
 
 import type { RunResult } from "./runPython";
+// Vite's `?worker` query produces a Worker constructor whose source is
+// `./runCppWorker.ts`. The chunk is lazy-loaded — non-C++ users don't
+// pay the JSCPP cost.
+import RunCppWorker from "./runCppWorker?worker";
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 
 /**
- * Interpret the given C++ source and return a RunResult shaped like
- * runPython/runJS so the editor panel can render output uniformly.
+ * Interpret the given C++ source in a sandboxed Web Worker. Returns a
+ * RunResult shaped like runPython/runJS so the editor panel renders
+ * output uniformly.
  *
- * JSCPP runs synchronously on the main thread — we wrap with setTimeout so
- * a runaway loop still hits the timeout. (No Worker because JSCPP relies on
- * global state that doesn't transfer cleanly across thread boundaries.)
+ * Hard timeout: terminates the worker — JSCPP can't intercept that, so
+ * runaway loops are guaranteed to die.
  */
-export async function runCpp(
+export function runCpp(
   code: string,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<RunResult> {
-  const start = performance.now();
-  // Dynamic import so the ~250 KB chunk isn't paid by Python/JS users.
-  const mod: any = await import(/* @vite-ignore */ "JSCPP");
-  // JSCPP exports `run(code, input, options)` as either default or named.
-  const run = mod.run ?? mod.default?.run ?? mod.default;
-  if (typeof run !== "function") {
-    return {
-      stdout: "",
-      stderr: "",
-      error: "C++ interpreter unavailable (JSCPP export shape changed)",
-      durationMs: Math.round(performance.now() - start),
+  return new Promise((resolve) => {
+    const start = performance.now();
+    const worker = new RunCppWorker();
+    let done = false;
+
+    const finish = (out: Omit<RunResult, "durationMs">) => {
+      if (done) return;
+      done = true;
+      worker.terminate();
+      resolve({ ...out, durationMs: Math.round(performance.now() - start) });
     };
-  }
 
-  let stdout = "";
-  let stderr = "";
-  let error: string | null = null;
+    worker.onmessage = (e: MessageEvent) => {
+      const data = e.data || {};
+      finish({
+        stdout: typeof data.stdout === "string" ? data.stdout : "",
+        stderr: typeof data.stderr === "string" ? data.stderr : "",
+        error:
+          typeof data.error === "string" || data.error === null
+            ? data.error
+            : String(data.error),
+      });
+    };
 
-  // JSCPP options: capture cout via `stdio.write(s)` callback, redirect
-  // stderr the same way. `unsigned` numbers throw warnings — keep them
-  // non-fatal so canonical LeetCode templates don't error out.
-  const config = {
-    stdio: { write: (s: string) => { stdout += s; } },
-    debug: false,
-    unsigned_overflow: "warn",
-    maxTimeout: timeoutMs,
-  };
+    worker.onerror = (evt: ErrorEvent) => {
+      finish({
+        stdout: "",
+        stderr: "",
+        error: evt.message || "C++ worker error",
+      });
+    };
 
-  try {
-    // Race the interpreter against our own timeout — JSCPP's maxTimeout is
-    // honored on a best-effort basis (some constructs spin without yielding).
-    await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => {
-        reject(new Error(`Execution exceeded ${timeoutMs}ms`));
-      }, timeoutMs);
-      try {
-        run(code, "", config);
-        clearTimeout(t);
-        resolve();
-      } catch (e) {
-        clearTimeout(t);
-        reject(e);
-      }
-    });
-  } catch (e) {
-    error = e instanceof Error ? (e.stack || e.message) : String(e);
-  }
+    // Hard timeout — actually kills the worker since terminate is sync.
+    setTimeout(() => {
+      finish({
+        stdout: "",
+        stderr: "",
+        error: `Execution exceeded ${timeoutMs}ms — likely an infinite loop.`,
+      });
+    }, timeoutMs);
 
-  return {
-    stdout,
-    stderr,
-    error,
-    durationMs: Math.round(performance.now() - start),
-  };
+    worker.postMessage({ code, timeoutMs });
+  });
 }

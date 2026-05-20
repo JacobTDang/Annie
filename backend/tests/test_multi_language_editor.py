@@ -56,16 +56,44 @@ def test_languages_catalog_marks_cpp_as_available_via_jscpp():
     )
 
 
-def test_run_cpp_helper_exists_and_lazy_loads_jscpp():
-    """The C++ runner must lazy-import JSCPP so it stays out of the eager
-    bundle for users who never pick C++."""
+def test_run_cpp_helper_exists_and_uses_worker():
+    """Post-review fix: runCpp now uses a Web Worker so the timeout can
+    actually terminate runaway loops. JSCPP's synchronous `run()` would
+    otherwise freeze the main thread regardless of how the timeout is
+    shaped."""
     cpp_path = os.path.join(_REPO_ROOT, "frontend", "src", "lib", "runCpp.ts")
     assert os.path.exists(cpp_path), "missing frontend/src/lib/runCpp.ts"
     text = _read(cpp_path)
-    assert re.search(r"export\s+async\s+function\s+runCpp", text)
-    # Lazy import — not a top-level `import "JSCPP"`
-    assert "await import" in text
+    assert re.search(r"export\s+function\s+runCpp", text)
+    # Worker pattern — Vite's `?worker` import + terminate-on-timeout
+    assert "?worker" in text, (
+        "runCpp must instantiate the worker via Vite's `?worker` query"
+    )
+    assert "new RunCppWorker" in text or "new Worker" in text
+    assert "worker.terminate" in text
+
+
+def test_run_cpp_worker_module_exists_and_imports_jscpp():
+    """The dedicated worker module isolates JSCPP from the main thread."""
+    worker_path = os.path.join(_REPO_ROOT, "frontend", "src", "lib", "runCppWorker.ts")
+    assert os.path.exists(worker_path), "missing frontend/src/lib/runCppWorker.ts"
+    text = _read(worker_path)
     assert "JSCPP" in text
+    # Posts back the standard {stdout, stderr, error} shape
+    assert "postMessage" in text
+    assert "stdout" in text and "error" in text
+
+
+def test_run_cpp_uses_terminate_for_timeout():
+    """Bundle-size guardrail kept: wasm-clang (~30 MB) deliberately NOT
+    used. But the worker REQUIRES `worker.terminate()` for the timeout to
+    do anything — without that the runaway-loop fix is theatre."""
+    cpp_path = os.path.join(_REPO_ROOT, "frontend", "src", "lib", "runCpp.ts")
+    text = _read(cpp_path)
+    assert "setTimeout" in text
+    assert "terminate()" in text
+    # Mention the runaway-loop motivation in the comments so reverts notice
+    assert "infinite loop" in text.lower() or "runaway" in text.lower()
 
 
 def test_wasm_clang_replaced_with_jscpp():
