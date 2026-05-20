@@ -447,9 +447,9 @@ def create_app(testing: bool = False) -> Flask:
 
     @app.post("/render")
     def render():
-        limited = _enforce_rate_limit()
-        if limited is not None:
-            return limited
+        # NOTE: /render is intentionally NOT rate-limited — the frontend's
+        # prerender warmer hits it ~10× on first page load. The expensive
+        # LLM-backed endpoints (/ask, /api/direct-lesson*) carry the quota.
         body = request.get_json(silent=True) or {}
         scene = body.get("scene")
         params = body.get("params", {})

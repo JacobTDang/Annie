@@ -10,6 +10,7 @@ import Editor from "@monaco-editor/react";
 import { motion } from "framer-motion";
 import { Loader2, Play, RotateCcw, Trash2 } from "lucide-react";
 import { runPython, RunResult } from "./lib/runPython";
+import { compareSolutions, CompareResult } from "./lib/compareSolutions";
 import { C, BODY } from "./theme";
 
 const SUCCESS = "#10b981";
@@ -21,6 +22,9 @@ interface Props {
   pyodideLoading: boolean;
   pyodideError: string | null;
   onPyodideLoad: () => void;
+  // Item #27 — when set, the user's stdout is diffed against this reference
+  // solution. The reference is run silently after the user's code.
+  referenceCode?: string;
 }
 
 export const CodeEditorPanel: React.FC<Props> = ({
@@ -29,15 +33,18 @@ export const CodeEditorPanel: React.FC<Props> = ({
   pyodideLoading,
   pyodideError,
   onPyodideLoad,
+  referenceCode,
 }) => {
   const [code, setCode] = useState(starterCode);
   const [result, setResult] = useState<RunResult | null>(null);
+  const [comparison, setComparison] = useState<CompareResult | null>(null);
   const [running, setRunning] = useState(false);
 
   // Sync editor when a new problem is rendered (starterCode prop changes).
   useEffect(() => {
     setCode(starterCode);
     setResult(null);
+    setComparison(null);
   }, [starterCode]);
 
   const handleRun = useCallback(async () => {
@@ -49,17 +56,32 @@ export const CodeEditorPanel: React.FC<Props> = ({
     setRunning(true);
     const r = await runPython(pyodide, code);
     setResult(r);
+
+    // Item #27 — if a reference solution was provided, run it now and
+    // compare. Failures here are non-fatal: we just skip the diff.
+    if (referenceCode && referenceCode.trim() && !r.error) {
+      try {
+        const cmp = await compareSolutions(pyodide, r, referenceCode);
+        setComparison(cmp);
+      } catch {
+        setComparison(null);
+      }
+    } else {
+      setComparison(null);
+    }
     setRunning(false);
-  }, [pyodide, code, onPyodideLoad]);
+  }, [pyodide, code, onPyodideLoad, referenceCode]);
 
   const handleReset = useCallback(() => {
     setCode(starterCode);
     setResult(null);
+    setComparison(null);
   }, [starterCode]);
 
   const handleClear = useCallback(() => {
     setCode("");
     setResult(null);
+    setComparison(null);
   }, []);
 
   const buttonLabel =
@@ -206,6 +228,23 @@ export const CodeEditorPanel: React.FC<Props> = ({
                 <span style={{ color: ERROR_COL }}>✗ Error</span>
               ) : (
                 <span style={{ color: SUCCESS }}>✓ Ran successfully</span>
+              )}
+              {comparison && (
+                <span
+                  style={{
+                    marginLeft: 12,
+                    color: comparison.matches ? SUCCESS : "#fbbf24",
+                  }}
+                  title={
+                    comparison.matches
+                      ? "Output matches the reference solution"
+                      : "Output differs from the reference solution"
+                  }
+                >
+                  {comparison.matches
+                    ? "✓ Matches reference"
+                    : "✗ Differs from reference"}
+                </span>
               )}
             </span>
             <span>{result.durationMs}ms</span>
