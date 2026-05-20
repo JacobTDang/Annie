@@ -7,7 +7,7 @@
 
 import React, { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Trash2, Play, X, Wifi, WifiOff, BookmarkX, ThumbsUp, ThumbsDown } from "lucide-react";
+import { Trash2, Play, X, Wifi, WifiOff, BookmarkX, ThumbsUp, ThumbsDown, Download, FileText } from "lucide-react";
 import { C, SANS, BODY, EASE } from "../theme";
 import {
   savedVideos,
@@ -16,6 +16,7 @@ import {
   removeVideoFromLibrary,
 } from "../lib/savedVideos";
 import { isDue, dueLabel } from "../lib/srs";
+import { downloadVideo, downloadMarkdownLibrary } from "../lib/exportLibrary";
 import { unpinVideo } from "../lib/api";
 
 export const LibraryPage: React.FC = () => {
@@ -48,6 +49,18 @@ export const LibraryPage: React.FC = () => {
   const handleClosePlayer = () => {
     if (playing) playing.cleanup();
     setPlaying(null);
+  };
+
+  const handleDownload = async (saved: SavedVideo) => {
+    try {
+      await downloadVideo(saved);
+    } catch (err) {
+      console.warn("download failed:", err);
+    }
+  };
+
+  const handleExportAll = () => {
+    downloadMarkdownLibrary(items);
   };
 
   const handleReview = (saved: SavedVideo, quality: number) => {
@@ -93,6 +106,30 @@ export const LibraryPage: React.FC = () => {
             Your saved animations. They live on your device — available offline,
             even if the backend isn't running.
           </p>
+          {items.length > 0 && (
+            <div className="mt-3">
+              <button
+                onClick={handleExportAll}
+                aria-label="Export library as markdown"
+                title="Download a markdown summary of every saved video"
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 4,
+                  border: `1px solid ${C.borderAlt}`,
+                  background: "transparent",
+                  color: C.text,
+                  fontSize: 12,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <FileText size={12} strokeWidth={2} />
+                Export library as markdown
+              </button>
+            </div>
+          )}
         </header>
 
         {items.length === 0 ? (
@@ -322,6 +359,24 @@ export const LibraryPage: React.FC = () => {
                         </button>
                       </>
                     )}
+                    <button
+                      onClick={() => handleDownload(it)}
+                      aria-label="Download MP4"
+                      title="Download as MP4"
+                      style={{
+                        padding: "6px 10px",
+                        borderRadius: 4,
+                        border: `1px solid ${C.borderAlt}`,
+                        background: C.bg,
+                        color: C.text,
+                        fontSize: 12,
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                      }}
+                    >
+                      <Download size={12} strokeWidth={2} />
+                    </button>
                     <button
                       onClick={() => setConfirmDelete(it.id)}
                       aria-label="Delete"
