@@ -18,7 +18,11 @@ import {
 import { isDue, dueLabel } from "../lib/srs";
 import { downloadVideo, downloadMarkdownLibrary } from "../lib/exportLibrary";
 import { resetQuizHistory } from "../lib/quizHistory";
-import { unpinVideo } from "../lib/api";
+import {
+  unpinVideo,
+  fetchMySharesIfAuthed,
+  type MyShareSummary,
+} from "../lib/api";
 
 export const LibraryPage: React.FC = () => {
   const [items, setItems] = useState<SavedVideo[]>(() => savedVideos.list());
@@ -29,8 +33,19 @@ export const LibraryPage: React.FC = () => {
     cleanup: () => void;
   } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [cloudShares, setCloudShares] = useState<MyShareSummary[]>([]);
 
   const refresh = useCallback(() => setItems(savedVideos.list()), []);
+
+  // Cloud shares (Item #17 completion). Empty array when anonymous so the
+  // section just doesn't render — no flicker, no error, no auth UI leakage.
+  useEffect(() => {
+    let cancelled = false;
+    fetchMySharesIfAuthed().then((s) => {
+      if (!cancelled) setCloudShares(s);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     // Cleanup any in-flight object URL on unmount or video swap
@@ -107,6 +122,45 @@ export const LibraryPage: React.FC = () => {
             Your saved animations. They live on your device — available offline,
             even if the backend isn't running.
           </p>
+          {cloudShares.length > 0 && (
+            <div
+              className="mt-4 p-3 rounded-md"
+              style={{
+                background: C.surface,
+                border: `1px solid ${C.borderAlt}`,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 500,
+                  letterSpacing: "0.05em",
+                  textTransform: "uppercase",
+                  color: C.textFaint,
+                  marginBottom: 8,
+                }}
+              >
+                Cloud shares · {cloudShares.length}
+              </div>
+              <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+                {cloudShares.map((s) => (
+                  <li key={s.code} style={{ fontSize: 12, padding: "4px 0" }}>
+                    <a
+                      href={`/?share=${encodeURIComponent(s.code)}`}
+                      style={{ color: C.text, textDecoration: "none" }}
+                    >
+                      {s.title}
+                    </a>
+                    {s.is_public && (
+                      <span style={{ marginLeft: 8, color: C.textFaint }}>
+                        · public
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {items.length > 0 && (
             <div className="mt-3 flex gap-2 flex-wrap">
               <button

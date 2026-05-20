@@ -4,9 +4,28 @@
 
 import { useEffect, useState } from "react";
 import type { AnimResult, ParsedProblem } from "../types";
+import { getAccessToken, isAuthEnabled } from "./auth";
 
 export const flaskBase = (): string =>
   (import.meta.env.VITE_FLASK_URL as string | undefined) || "http://localhost:5000";
+
+// ─────────────────────────────────────────────────────────────
+// Auth header helper (Item #17 completion).
+// Attaches Authorization: Bearer <jwt> when Supabase auth is configured AND
+// the user is signed in. Anonymous traffic gets the unmodified headers — the
+// backend treats both as valid.
+// ─────────────────────────────────────────────────────────────
+async function _authHeaders(extra: Record<string, string> = {}): Promise<Record<string, string>> {
+  const base: Record<string, string> = { ...extra };
+  if (!isAuthEnabled()) return base;
+  try {
+    const token = await getAccessToken();
+    if (token) base["Authorization"] = `Bearer ${token}`;
+  } catch {
+    // Auth probe failed — proceed anonymously, same as before
+  }
+  return base;
+}
 
 // ─────────────────────────────────────────────────────────────
 // Live progress: pollJob writes the latest backend-reported progress
@@ -214,9 +233,10 @@ export async function parseFollowUp(
 // ─────────────────────────────────────────────────────────────
 
 export async function pinVideo(jobId: string): Promise<{ url: string }> {
+  const headers = await _authHeaders({ "Content-Type": "application/json" });
   const res = await fetch(`${flaskBase()}/api/pin`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ jobId }),
   });
   if (!res.ok) {
@@ -227,11 +247,63 @@ export async function pinVideo(jobId: string): Promise<{ url: string }> {
 }
 
 export async function unpinVideo(jobId: string): Promise<void> {
+  const headers = await _authHeaders();
   const res = await fetch(`${flaskBase()}/api/pin/${encodeURIComponent(jobId)}`, {
     method: "DELETE",
+    headers,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || `unpin failed (HTTP ${res.status})`);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Cloud share helpers (Item #17 completion)
+// ─────────────────────────────────────────────────────────────
+
+export interface MyShareSummary {
+  code: string;
+  title: string;
+  scene: string | null;
+  domain: string | null;
+  is_public: boolean;
+  created_at: number | null;
+}
+
+/** List shares owned by the authenticated user. Returns [] when anonymous /
+ *  auth disabled / token rejected so callers can render an empty section. */
+export async function fetchMySharesIfAuthed(): Promise<MyShareSummary[]> {
+  if (!isAuthEnabled()) return [];
+  const headers = await _authHeaders();
+  if (!headers["Authorization"]) return [];   // not signed in
+  try {
+    const res = await fetch(`${flaskBase()}/api/share/mine`, { headers });
+    if (!res.ok) return [];
+    const body = await res.json();
+    return Array.isArray(body?.shares) ? body.shares : [];
+  } catch {
+    return [];
+  }
+}
+
+/** POST one quiz answer to the backend. No-op for anonymous traffic — the
+ *  frontend already records to localStorage via quizHistory.recordAttempt. */
+export async function postQuizAttempt(
+  scene: string, correct: boolean, questionIndex: number,
+): Promise<void> {
+  if (!isAuthEnabled()) return;
+  const headers = await _authHeaders({ "Content-Type": "application/json" });
+  if (!headers["Authorization"]) return;
+  try {
+    await fetch(`${flaskBase()}/api/quiz-attempt`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        scene, correct, question_index: questionIndex,
+      }),
+    });
+  } catch {
+    // Non-fatal — localStorage copy still records the attempt
   }
 }

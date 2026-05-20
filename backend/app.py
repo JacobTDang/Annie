@@ -1013,11 +1013,14 @@ def create_app(testing: bool = False) -> Flask:
         if payload_size > 50_000:
             return jsonify({"error": "payload too large (max 50 kB)"}), 413
 
+        from auth import current_user as _current_user
+        viewer = _current_user(request)
         is_public = bool(body.get("is_public", False))
         record = {
             "parsed": parsed,
             "is_public": is_public,
             "created_at": int(time.time()),
+            "user_id": (viewer.get("sub") if viewer else None),
         }
 
         with _SHARES_LOCK:
@@ -1034,7 +1037,13 @@ def create_app(testing: bool = False) -> Flask:
 
     @app.get("/api/share/<code>")
     def api_share_get(code: str):
-        """Look up a previously-shared parsed problem by short code."""
+        """Look up a previously-shared parsed problem by short code.
+
+        Auth gating (Item #17 completion): if the share has a non-null
+        ``user_id`` AND is not public, only the owner can fetch it.
+        Anonymous shares (``user_id is None``) stay open to anyone — keeps
+        the pre-auth contract working without a forced migration.
+        """
         if not code or len(code) != _SHARE_CODE_LEN:
             return jsonify({"error": "invalid share code"}), 400
         with _SHARES_LOCK:
@@ -1042,8 +1051,54 @@ def create_app(testing: bool = False) -> Flask:
             record = shares.get(code)
         if record is None:
             return jsonify({"error": "share not found"}), 404
+
+        from auth import current_user as _current_user
+        owner = isinstance(record, dict) and record.get("user_id")
+        if owner and not (isinstance(record, dict) and record.get("is_public")):
+            viewer = _current_user(request)
+            viewer_id = viewer.get("sub") if viewer else None
+            if viewer_id != owner:
+                return jsonify({"error": "share is private"}), 403
+
         parsed = _share_parsed(record)
         return jsonify({"parsed": parsed})
+
+    @app.get("/api/share/mine")
+    def api_share_mine():
+        """List shares owned by the authenticated caller (Item #17 completion).
+
+        Returns 401 when no token / unverifiable token / auth disabled.
+        Response: { "shares": [{code, title, scene, is_public, created_at}, ...] }
+        """
+        from auth import current_user as _current_user, is_enabled as _auth_enabled
+        if not _auth_enabled():
+            return jsonify({"error": "auth not configured"}), 401
+        viewer = _current_user(request)
+        if not viewer or not viewer.get("sub"):
+            return jsonify({"error": "authentication required"}), 401
+        owner_id = viewer["sub"]
+
+        with _SHARES_LOCK:
+            shares = _load_shares()
+        out: list[dict] = []
+        for code, record in shares.items():
+            if not isinstance(record, dict):
+                continue
+            if record.get("user_id") != owner_id:
+                continue
+            parsed = _share_parsed(record)
+            if not isinstance(parsed, dict):
+                continue
+            out.append({
+                "code": code,
+                "title": parsed.get("title") or parsed.get("scene") or "Untitled",
+                "scene": parsed.get("scene"),
+                "domain": parsed.get("domain"),
+                "is_public": bool(record.get("is_public")),
+                "created_at": record.get("created_at"),
+            })
+        out.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
+        return jsonify({"shares": out})
 
     @app.get("/api/public/recent")
     def api_public_recent():
@@ -1223,13 +1278,20 @@ def create_app(testing: bool = False) -> Flask:
 
         Request:  { "jobId": "uuid" }
         Response: { "url": "/media/lessons/<id>.mp4" }
+
+        Auth gating: pin is namespaced by the caller's user_id when a valid
+        Supabase JWT is attached (Authorization: Bearer …). Anonymous calls
+        write to a shared ``__anon`` bucket as before.
         """
         body = request.get_json(silent=True) or {}
         job_id = (body.get("jobId") or "").strip()
         if not job_id:
             return jsonify({"error": "jobId required"}), 400
+        from auth import current_user as _current_user
+        viewer = _current_user(request)
+        user_id = viewer.get("sub") if viewer else None
         try:
-            url = pin_video(job_id)
+            url = pin_video(job_id, user_id=user_id)
         except ValueError as exc:
             msg = str(exc)
             if "unknown" in msg:
@@ -1240,8 +1302,70 @@ def create_app(testing: bool = False) -> Flask:
     @app.delete("/api/pin/<job_id>")
     def api_unpin(job_id: str):
         """Remove pin protection. Idempotent."""
-        unpin_video(job_id)
+        from auth import current_user as _current_user
+        viewer = _current_user(request)
+        user_id = viewer.get("sub") if viewer else None
+        unpin_video(job_id, user_id=user_id)
         return jsonify({"ok": True}), 200
+
+    @app.post("/api/quiz-attempt")
+    def api_quiz_attempt():
+        """Record a quiz attempt (auth gating: stored only for signed-in users).
+
+        Anonymous → 204 No Content (silently skipped — the frontend still
+        keeps a localStorage copy via quizHistory.ts).
+
+        Request:  { "scene": "tangent_line", "correct": true,
+                    "question_index": 0 }
+        Response: { "stored": true|false } | 204 (anonymous)
+        """
+        from auth import current_user as _current_user, is_enabled as _auth_enabled
+        viewer = _current_user(request)
+        if not (viewer and viewer.get("sub")):
+            # No persistent backend store for anonymous traffic — the
+            # frontend handles localStorage on its own.
+            return ("", 204)
+
+        body = request.get_json(silent=True) or {}
+        scene = (body.get("scene") or "").strip()
+        if not scene:
+            return jsonify({"error": "scene required"}), 400
+        correct = bool(body.get("correct"))
+        question_index = body.get("question_index")
+        try:
+            question_index = int(question_index) if question_index is not None else None
+        except (TypeError, ValueError):
+            question_index = None
+
+        attempts_path = os.path.join(
+            os.path.dirname(__file__), "data", "quiz_attempts.json",
+        )
+        os.makedirs(os.path.dirname(attempts_path), exist_ok=True)
+        record = {
+            "user_id": viewer["sub"],
+            "scene": scene,
+            "correct": correct,
+            "question_index": question_index,
+            "at": int(time.time()),
+        }
+        # Append-only JSON list. Best-effort durability — operator can move
+        # this to SQLite/Supabase later by swapping the read+write helpers.
+        try:
+            existing: list = []
+            if os.path.exists(attempts_path):
+                with open(attempts_path, encoding="utf-8") as fh:
+                    raw = json.load(fh)
+                if isinstance(raw, list):
+                    existing = raw
+            existing.append(record)
+            tmp = attempts_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(existing, fh, indent=2)
+            os.replace(tmp, attempts_path)
+        except OSError as exc:
+            app.logger.warning("quiz-attempt write failed: %s", exc)
+            return jsonify({"error": "store failed"}), 500
+        return jsonify({"stored": True}), 200
 
     @app.get("/api/trace/<job_id>")
     def api_trace(job_id: str):

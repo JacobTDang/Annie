@@ -129,8 +129,8 @@ def test_aggregate_progress_sets_rendering_x_of_n(tmp_path, monkeypatch):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_pin_video_writes_to_index(tmp_path, monkeypatch):
-    """Item #15 refactor: the pin index now stores lesson_id (backend-
-    agnostic) rather than the full URL."""
+    """Auth-gating refactor: pin index is now nested per-user. Anonymous
+    callers land under "__anon" with the same {job_id → lesson_id} mapping."""
     monkeypatch.setattr("renderer.worker._PINNED_INDEX", str(tmp_path / "pinned_index.json"))
     monkeypatch.setattr("renderer.worker._LESSONS_DIR", str(tmp_path))
     from renderer.worker import pin_video, _load_pinned_index, _jobs
@@ -140,8 +140,8 @@ def test_pin_video_writes_to_index(tmp_path, monkeypatch):
                      "error": None, "progress": 1.0, "stage": "done"}
     pin_video(job_id)
     index = _load_pinned_index()
-    # New shape: lesson_id extracted from the URL basename
-    assert index.get(job_id) == "test"
+    assert "__anon" in index
+    assert index["__anon"].get(job_id) == "test"
 
 
 def test_unpin_video_removes_from_index(tmp_path, monkeypatch):
@@ -153,9 +153,12 @@ def test_unpin_video_removes_from_index(tmp_path, monkeypatch):
     _jobs[job_id] = {"status": "done", "url": "/media/lessons/abc.mp4",
                      "error": None, "progress": 1.0, "stage": "done"}
     pin_video(job_id)
-    assert job_id in _load_pinned_index()
+    index = _load_pinned_index()
+    assert job_id in index.get("__anon", {})
     assert unpin_video(job_id) is True
-    assert job_id not in _load_pinned_index()
+    index = _load_pinned_index()
+    # Empty bucket gets pruned
+    assert job_id not in index.get("__anon", {})
 
 
 def test_unpin_video_idempotent(tmp_path, monkeypatch):
@@ -199,9 +202,9 @@ def test_cleanup_respects_pinned_index(tmp_path, monkeypatch):
         f.write_bytes(b"x" * 100)
         os.utime(f, (old, old))
 
-    # Pin file_2 explicitly
+    # Pin file_2 explicitly via the nested-per-user shape (auth-gating refactor)
     from renderer.worker import _save_pinned_index, cleanup_old_lessons
-    _save_pinned_index({"my-job": "/media/lessons/file_2.mp4"})
+    _save_pinned_index({"__anon": {"my-job": "file_2"}})
 
     # Cap at 1 — should evict 4, but file_2 must survive
     removed = cleanup_old_lessons(max_count=1, min_age_seconds=0)

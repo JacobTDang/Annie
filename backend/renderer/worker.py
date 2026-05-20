@@ -243,15 +243,46 @@ def _cache_store(cache_key: str, lesson_id: str) -> None:
 # Video pinning — user-saved videos protected from LRU eviction
 # ---------------------------------------------------------------------------
 
+def _pinned_bucket(user_id: str | None) -> str:
+    """Auth-gating namespace key for the pinned-index. Anonymous → ``__anon``."""
+    return f"user:{user_id}" if user_id else "__anon"
+
+
+def _migrate_flat_pin_index(raw: dict) -> dict:
+    """Auth-gating compat: legacy pinned_index.json was {job_id → lesson_id}.
+
+    Detect that shape (top-level values are strings) and wrap into
+    ``{"__anon": {job_id → lesson_id}}`` so older deployments don't lose
+    their pinned set on upgrade.
+    """
+    if not raw:
+        return {}
+    # Already nested if every top-level value is a dict
+    if all(isinstance(v, dict) for v in raw.values()):
+        return raw
+    # Legacy flat → nest under __anon
+    return {"__anon": dict(raw)}
+
+
 def _load_pinned_index() -> dict:
     if not os.path.exists(_PINNED_INDEX):
         return {}
     try:
         with open(_PINNED_INDEX) as fh:
             data = json.load(fh)
-            return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    migrated = _migrate_flat_pin_index(data)
+    if migrated is not data and migrated != data:
+        # Best-effort migration write — failing here is non-fatal; we still
+        # return the migrated shape so reads work right away.
+        try:
+            _save_pinned_index(migrated)
+        except OSError:
+            pass
+    return migrated
 
 
 def _save_pinned_index(index: dict) -> None:
@@ -262,12 +293,13 @@ def _save_pinned_index(index: dict) -> None:
     os.replace(tmp, _PINNED_INDEX)
 
 
-def pin_video(job_id: str) -> str:
+def pin_video(job_id: str, user_id: str | None = None) -> str:
     """Mark a completed job's video as protected from cleanup.
 
     Returns the video URL. Raises ValueError if the job is unknown or not
     yet done. The pin index stores a lesson_id (backend-agnostic) so the
-    entry survives a Local→S3 backend swap.
+    entry survives a Local→S3 backend swap. ``user_id`` (when set) namespaces
+    the pin so signed-in users don't share a flat pool with anonymous traffic.
     """
     job = _jobs.get(job_id)
     if job is None:
@@ -278,22 +310,39 @@ def pin_video(job_id: str) -> str:
     if not url:
         raise ValueError("job has no url")
     lesson_id = _url_to_lesson_id(url) or job_id
+    bucket = _pinned_bucket(user_id)
     with _PIN_LOCK:
         index = _load_pinned_index()
-        index[job_id] = lesson_id
+        index.setdefault(bucket, {})[job_id] = lesson_id
         _save_pinned_index(index)
     return url
 
 
-def unpin_video(job_id: str) -> bool:
+def unpin_video(job_id: str, user_id: str | None = None) -> bool:
     """Remove protection. Idempotent — returns True if it was pinned, False otherwise."""
+    bucket = _pinned_bucket(user_id)
     with _PIN_LOCK:
         index = _load_pinned_index()
-        existed = job_id in index
+        sub = index.get(bucket, {})
+        existed = job_id in sub
         if existed:
-            index.pop(job_id, None)
+            sub.pop(job_id, None)
+            if not sub:
+                index.pop(bucket, None)
             _save_pinned_index(index)
     return existed
+
+
+def _all_pinned_lesson_ids() -> set:
+    """Flatten every bucket's lesson_id values — used by cleanup_old_lessons."""
+    out: set = set()
+    index = _load_pinned_index()
+    for bucket in index.values():
+        if isinstance(bucket, dict):
+            for v in bucket.values():
+                if isinstance(v, str):
+                    out.add(v)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -348,19 +397,20 @@ def cleanup_old_lessons(max_count: int = 200, min_age_seconds: int = 120) -> int
     # Collect cache-referenced AND user-pinned lesson IDs (sacred).
     with _CACHE_LOCK:
         cache_index = _load_cache_index()
-    with _PIN_LOCK:
-        pin_index = _load_pinned_index()
 
     def _resolve_lesson_id(entry: str) -> str | None:
         if entry.startswith("/") or entry.startswith("http"):
             return _url_to_lesson_id(entry)
         return entry
 
-    protected_ids = set()
-    for entry in list(cache_index.values()) + list(pin_index.values()):
+    protected_ids: set = set()
+    for entry in cache_index.values():
         lid = _resolve_lesson_id(entry)
         if lid:
             protected_ids.add(lid)
+    # Pins live in a nested per-user index now (auth-gating).
+    with _PIN_LOCK:
+        protected_ids.update(_all_pinned_lesson_ids())
     protected_paths = {
         os.path.realpath(os.path.join(_LESSONS_DIR, f"{lid}.mp4"))
         for lid in protected_ids

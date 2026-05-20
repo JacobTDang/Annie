@@ -42,6 +42,7 @@ import {
   Network,
 } from "lucide-react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { AuthMenu } from "./components/AuthMenu";
 import { C, SANS, BODY, EASE } from "./theme";
 import type { ParsedProblem, AnimResult } from "./types";
 import {
@@ -1669,6 +1670,12 @@ const Sidebar: React.FC<{
           })}
         </nav>
       </LayoutGroup>
+
+      {/* Auth menu (Item #17 completion). Renders null when Supabase env
+          vars are unset, so anonymous deployments see zero auth UI. */}
+      <div className="mt-auto px-3 pb-3 pt-2" style={{ borderTop: `1px solid ${C.borderAlt}` }}>
+        <AuthMenu />
+      </div>
     </aside>
   );
 };
