@@ -4,6 +4,7 @@
 // owns the metadata index (titles, ids, thumbnails, server URLs).
 
 import { videoStore } from "./videoStore";
+import { SrsState, initialSrsState, scheduleNext } from "./srs";
 
 const STORAGE_KEY = "lumen_saved_videos";
 
@@ -17,6 +18,9 @@ export interface SavedVideo {
   serverUrl: string;           // absolute URL while backend is up
   thumbnailDataUrl?: string;   // first-frame snapshot (PNG data URL)
   hasOfflineCopy: boolean;     // true if also in IndexedDB
+  // Item #28 — SM-2 spaced-repetition schedule. Optional for backwards
+  // compatibility: older records get treated as "due now" until reviewed once.
+  srs?: SrsState;
 }
 
 function _read(): SavedVideo[] {
@@ -68,6 +72,18 @@ export const savedVideos = {
     if (idx === -1) return;
     items[idx] = { ...items[idx], hasOfflineCopy: hasOffline };
     _write(items);
+  },
+
+  /** Item #28 — record an SM-2 review (quality 0..5) and persist new schedule. */
+  recordReview(id: string, quality: number, now: number = Date.now()): SrsState | undefined {
+    const items = _read();
+    const idx = items.findIndex((v) => v.id === id);
+    if (idx === -1) return undefined;
+    const prev = items[idx].srs ?? initialSrsState(now);
+    const next = scheduleNext(prev, quality, now);
+    items[idx] = { ...items[idx], srs: next };
+    _write(items);
+    return next;
   },
 };
 

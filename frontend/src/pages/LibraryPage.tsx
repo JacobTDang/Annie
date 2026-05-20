@@ -7,7 +7,7 @@
 
 import React, { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Trash2, Play, X, Wifi, WifiOff, BookmarkX } from "lucide-react";
+import { Trash2, Play, X, Wifi, WifiOff, BookmarkX, ThumbsUp, ThumbsDown } from "lucide-react";
 import { C, SANS, BODY, EASE } from "../theme";
 import {
   savedVideos,
@@ -15,6 +15,7 @@ import {
   playableUrl,
   removeVideoFromLibrary,
 } from "../lib/savedVideos";
+import { isDue, dueLabel } from "../lib/srs";
 import { unpinVideo } from "../lib/api";
 
 export const LibraryPage: React.FC = () => {
@@ -47,6 +48,13 @@ export const LibraryPage: React.FC = () => {
   const handleClosePlayer = () => {
     if (playing) playing.cleanup();
     setPlaying(null);
+  };
+
+  const handleReview = (saved: SavedVideo, quality: number) => {
+    // Item #28 — record SM-2 review; quality 5 = "knew it perfectly",
+    // 1 = "couldn't remember". Persists immediately and refreshes the grid.
+    savedVideos.recordReview(saved.id, quality);
+    refresh();
   };
 
   const handleDelete = async (saved: SavedVideo) => {
@@ -227,6 +235,31 @@ export const LibraryPage: React.FC = () => {
                         <Wifi size={11} strokeWidth={2} /> server
                       </span>
                     )}
+                    {isDue(it.srs) && (
+                      <span
+                        title="Time to review — quiz yourself on this lesson"
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 3,
+                          padding: "1px 6px",
+                          borderRadius: 3,
+                          background: "rgba(251, 191, 36, 0.18)",
+                          color: "#fbbf24",
+                          fontWeight: 500,
+                        }}
+                      >
+                        Due now
+                      </span>
+                    )}
+                    {!isDue(it.srs) && it.srs && (
+                      <span
+                        title={`Next review: ${new Date(it.srs.nextReviewAt).toLocaleString()}`}
+                        style={{ color: C.textFaint }}
+                      >
+                        {dueLabel(it.srs)}
+                      </span>
+                    )}
                   </div>
 
                   <div style={{ marginTop: "auto", display: "flex", gap: 8 }}>
@@ -249,6 +282,46 @@ export const LibraryPage: React.FC = () => {
                     >
                       <Play size={12} strokeWidth={2} /> Play
                     </button>
+                    {isDue(it.srs) && (
+                      <>
+                        <button
+                          onClick={() => handleReview(it, 1)}
+                          aria-label="I forgot"
+                          title="Mark as forgotten — schedule a soon review"
+                          style={{
+                            padding: "6px 10px",
+                            borderRadius: 4,
+                            border: `1px solid ${C.borderAlt}`,
+                            background: C.bg,
+                            color: "#fca5a5",
+                            fontSize: 12,
+                            cursor: "pointer",
+                            display: "inline-flex",
+                            alignItems: "center",
+                          }}
+                        >
+                          <ThumbsDown size={12} strokeWidth={2} />
+                        </button>
+                        <button
+                          onClick={() => handleReview(it, 5)}
+                          aria-label="I knew it"
+                          title="Knew it — push review further out"
+                          style={{
+                            padding: "6px 10px",
+                            borderRadius: 4,
+                            border: `1px solid ${C.borderAlt}`,
+                            background: C.bg,
+                            color: C.ok,
+                            fontSize: 12,
+                            cursor: "pointer",
+                            display: "inline-flex",
+                            alignItems: "center",
+                          }}
+                        >
+                          <ThumbsUp size={12} strokeWidth={2} />
+                        </button>
+                      </>
+                    )}
                     <button
                       onClick={() => setConfirmDelete(it.id)}
                       aria-label="Delete"
