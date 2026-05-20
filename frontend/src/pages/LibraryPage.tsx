@@ -17,6 +17,7 @@ import {
 } from "../lib/savedVideos";
 import { isDue, dueLabel } from "../lib/srs";
 import { downloadVideo, downloadMarkdownLibrary } from "../lib/exportLibrary";
+import { resetQuizHistory } from "../lib/quizHistory";
 import { unpinVideo } from "../lib/api";
 
 export const LibraryPage: React.FC = () => {
@@ -107,7 +108,7 @@ export const LibraryPage: React.FC = () => {
             even if the backend isn't running.
           </p>
           {items.length > 0 && (
-            <div className="mt-3">
+            <div className="mt-3 flex gap-2 flex-wrap">
               <button
                 onClick={handleExportAll}
                 aria-label="Export library as markdown"
@@ -127,6 +128,26 @@ export const LibraryPage: React.FC = () => {
               >
                 <FileText size={12} strokeWidth={2} />
                 Export library as markdown
+              </button>
+              <button
+                onClick={() => {
+                  if (confirm("Reset all quiz history? This wipes per-topic accuracy stats.")) {
+                    resetQuizHistory();
+                  }
+                }}
+                aria-label="Reset quiz history"
+                title="Wipe per-topic quiz accuracy data — useful when starting over"
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 4,
+                  border: `1px solid ${C.borderAlt}`,
+                  background: "transparent",
+                  color: C.textMuted,
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                Reset quiz history
               </button>
             </div>
           )}

@@ -32,6 +32,7 @@ import {
 } from "../lib/api";
 import { StageTimeline } from "../components/StageTimeline";
 import { saveVideoToLibrary } from "../lib/savedVideos";
+import { recordAttempt } from "../lib/quizHistory";
 
 type PasteState =
   | { kind: "idle" }
@@ -1693,7 +1694,19 @@ const PasteProblemPage: React.FC<PasteProblemPageProps> = ({
                       ))}
                       {!quiz.submitted ? (
                         <button
-                          onClick={() => setQuiz({ ...quiz, submitted: true })}
+                          onClick={() => {
+                            // Item #34 — record each quiz attempt under the
+                            // scene's topic id so adaptive difficulty can
+                            // shape future lessons. Scene name is our topic key.
+                            if (state.kind === "ready" && state.parsed?.scene) {
+                              const topicId = state.parsed.scene;
+                              quiz.answers.forEach((a, i) => {
+                                if (a === null) return;
+                                recordAttempt(topicId, a === quiz.questions[i].correct);
+                              });
+                            }
+                            setQuiz({ ...quiz, submitted: true });
+                          }}
                           disabled={quiz.answers.some(a => a === null)}
                           className="px-4 py-1.5 rounded text-sm"
                           style={{

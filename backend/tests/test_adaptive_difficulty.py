@@ -152,3 +152,31 @@ def test_frontend_quiz_history_module_exposes_required_api():
     # Threshold constants — flag if they ever silently change
     assert "0.5" in text   # extend below 50%
     assert "0.9" in text   # skip at/above 90%
+
+
+def test_paste_problem_page_records_quiz_attempts():
+    """Item #34 follow-up: when the user submits a quiz, each answer must
+    be recorded under the scene's topic id so the next lesson can adapt."""
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "frontend", "src", "pages", "PasteProblemPage.tsx",
+    )
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    assert "recordAttempt" in text, (
+        "PasteProblemPage must call recordAttempt() on quiz submit"
+    )
+    # The call must happen inside the Submit handler (sibling to setQuiz submitted=true)
+    assert "submitted: true" in text
+
+
+def test_library_page_exposes_quiz_history_reset():
+    """The user needs a way to wipe their quiz history (privacy + restart)."""
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "frontend", "src", "pages", "LibraryPage.tsx",
+    )
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    assert "resetQuizHistory" in text
+    assert "Reset quiz history" in text
