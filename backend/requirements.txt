@@ -3,6 +3,10 @@ flask-cors
 # Production WSGI server — used in containerized deploys (Fly.io etc.). The
 # Flask dev server is not safe for production traffic.
 gunicorn
+# WebSocket support for real-time collab (Item #30). Pure-Python adapter on
+# top of simple_websocket; works under the same gunicorn/Flask process as
+# the rest of the API.
+flask-sock
 google-genai
 manim
 openai

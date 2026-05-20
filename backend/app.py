@@ -384,6 +384,14 @@ def create_app(testing: bool = False) -> Flask:
     _init_sentry()
     CORS(app)
 
+    # Item #30 — wire the real-time-collab WebSocket route. Safe no-op if
+    # flask-sock isn't installed (logged at startup).
+    try:
+        from collab import register_collab_routes
+        register_collab_routes(app)
+    except Exception as exc:  # pragma: no cover — defensive
+        app.logger.warning("[collab] route registration failed: %s", exc)
+
     # Item #18 — per-IP rate limit on heavy endpoints. 10/day anonymous per
     # IP by default; disabled in tests so the existing suite isn't perturbed.
     # Override via LUMEN_RATE_LIMIT="0" to disable, or any integer to override.
