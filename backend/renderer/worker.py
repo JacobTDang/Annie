@@ -10,7 +10,12 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-_jobs: dict = {}
+from renderer.job_store import JobDictProxy, build_default_store
+
+# Item #13 — `_jobs` is a dict-shaped façade over a JobStore. Default is
+# in-memory (zero behavior change). Set LUMEN_JOBS_DB to opt into SQLite
+# persistence so jobs survive a worker restart.
+_jobs = JobDictProxy(build_default_store())
 
 # ---------------------------------------------------------------------------
 # Quality settings
