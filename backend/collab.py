@@ -294,8 +294,14 @@ def _remove_socket(room_id: str, sock) -> None:
         # Final flush so an empty room's last edits survive the eviction.
         _maybe_persist(room_id, force=True)
         # Free the Y.Doc — it'll be reloaded from disk if anyone rejoins.
+        # Critical: re-check that the room is STILL empty under the lock. A
+        # peer can join between the persist() above (slow disk I/O) and
+        # this line; popping the doc out from under them would corrupt
+        # their in-flight session. Post-review fix.
         with _ROOMS_LOCK:
-            _docs.pop(room_id, None)
+            if room_id not in _rooms:
+                _docs.pop(room_id, None)
+                _dirty.discard(room_id)
 
 
 def _peers_snapshot(room_id: str, exclude) -> list:

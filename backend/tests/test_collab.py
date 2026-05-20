@@ -312,6 +312,58 @@ def test_room_empties_trigger_final_persist(tmp_path, monkeypatch):
     assert str(doc2.get_text("monaco")) == "just before disconnect"
 
 
+def test_reconnect_during_persist_keeps_doc(monkeypatch):
+    """Post-review regression: when the last socket leaves, _remove_socket
+    releases _ROOMS_LOCK to do disk I/O. If a new peer connects during that
+    window, the cleanup must NOT evict the doc out from under them.
+
+    The test stubs _maybe_persist with a slow-noop instead of calling
+    real persist — the real y_py.encode_state_as_update would touch the
+    YDoc from a non-owning thread (YDoc is `unsendable`), tripping a
+    PyO3 panic that's unrelated to the eviction-race contract under test.
+    """
+    persist_started = threading.Event()
+    persist_can_finish = threading.Event()
+
+    def slow_persist(room_id, force=False):
+        persist_started.set()
+        persist_can_finish.wait(timeout=2.0)
+    monkeypatch.setattr(collab, "_maybe_persist", slow_persist)
+
+    # Seed a sentinel "doc" so we can detect identity changes without touching y_py
+    sentinel_doc = object()
+    sock_a = MagicMock()
+    collab._add_socket("race-room", sock_a)
+    with collab._ROOMS_LOCK:
+        collab._docs["race-room"] = sentinel_doc
+
+    # Thread 1: remove the last socket → enters persist (which blocks)
+    def remover():
+        collab._remove_socket("race-room", sock_a)
+    rm_thread = threading.Thread(target=remover)
+    rm_thread.start()
+
+    # Wait until the persist has started + the room has been popped
+    assert persist_started.wait(timeout=2.0)
+    # Sanity: the room is gone from _rooms but the doc is still in _docs
+    with collab._ROOMS_LOCK:
+        assert "race-room" not in collab._rooms
+        assert "race-room" in collab._docs
+
+    # Thread 2: new peer joins the same room during the persist
+    sock_b = MagicMock()
+    collab._add_socket("race-room", sock_b)
+
+    # Release the persist + let the cleanup run
+    persist_can_finish.set()
+    rm_thread.join(timeout=2.0)
+
+    # The doc should still be present (room re-occupied so cleanup bailed)
+    with collab._ROOMS_LOCK:
+        assert "race-room" in collab._docs, "cleanup evicted doc despite rejoin"
+        assert collab._docs["race-room"] is sentinel_doc
+
+
 @pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
 def test_room_empties_drops_doc_from_memory():
     """After the last peer leaves, the in-memory Y.Doc must be released
