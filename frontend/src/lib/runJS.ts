@@ -118,9 +118,9 @@ export const LANGUAGES: Array<{
 }> = [
   { id: "python",     label: "Python",     monacoLanguage: "python",     available: true },
   { id: "javascript", label: "JavaScript", monacoLanguage: "javascript", available: true },
-  {
-    id: "cpp", label: "C++", monacoLanguage: "cpp",
-    available: false,
-    unavailableReason: "Coming soon — requires wasm-clang toolchain (~30 MB).",
-  },
+  // C++ runs via JSCPP — interprets a subset of C++14 (cout/cin, vectors,
+  // strings, maps, classes, lambdas). Lazy-loaded so non-C++ users don't
+  // pay the ~250 KB cost. Not a full toolchain — file IO, raw pointers
+  // beyond simple use, and some STL corners aren't supported.
+  { id: "cpp",        label: "C++",        monacoLanguage: "cpp",        available: true },
 ];

@@ -11,6 +11,7 @@ import { motion } from "framer-motion";
 import { Loader2, Play, RotateCcw, Trash2 } from "lucide-react";
 import { runPython, RunResult } from "./lib/runPython";
 import { runJS, LANGUAGES, type SupportedLanguage } from "./lib/runJS";
+import { runCpp } from "./lib/runCpp";
 import { compareSolutions, CompareResult } from "./lib/compareSolutions";
 import { C, BODY } from "./theme";
 
@@ -86,13 +87,19 @@ export const CodeEditorPanel: React.FC<Props> = ({
       setRunning(true);
       const r = await runJS(code);
       setResult(r);
-      // Reference-diff isn't meaningful across languages; clear any stale one.
       setComparison(null);
       setRunning(false);
       return;
     }
 
-    // C++ and other future languages — currently a "coming soon" placeholder.
+    if (language === "cpp") {
+      setRunning(true);
+      const r = await runCpp(code);
+      setResult(r);
+      setComparison(null);
+      setRunning(false);
+      return;
+    }
   }, [pyodide, code, onPyodideLoad, referenceCode, language]);
 
   const handleReset = useCallback(() => {
@@ -108,7 +115,7 @@ export const CodeEditorPanel: React.FC<Props> = ({
   }, []);
 
   const activeLang = LANGUAGES.find((l) => l.id === language);
-  const langUnavailable = activeLang && !activeLang.available;
+  const langUnavailable = !!(activeLang && !activeLang.available);
 
   const buttonLabel =
     langUnavailable ? (activeLang?.unavailableReason ?? "Unavailable") :
@@ -117,10 +124,11 @@ export const CodeEditorPanel: React.FC<Props> = ({
     running ? "Running…" :
     "Run";
 
-  const buttonDisabled =
+  const buttonDisabled = !!(
     running ||
     (language === "python" && pyodideLoading) ||
-    langUnavailable;
+    langUnavailable
+  );
 
   return (
     <div className="mt-8">

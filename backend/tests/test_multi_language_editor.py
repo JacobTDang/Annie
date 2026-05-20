@@ -45,13 +45,36 @@ def test_run_js_enforces_a_timeout():
     assert "5_000" in text or "5000" in text
 
 
-def test_languages_catalog_marks_cpp_as_unavailable():
-    """C++ requires wasm-clang which isn't bundled — must be flagged."""
+def test_languages_catalog_marks_cpp_as_available_via_jscpp():
+    """C++ now runs via JSCPP (lazy-loaded ~250 KB chunk). The placeholder
+    'coming soon' state has been replaced with a real interpreter."""
     text = _read(_RUN_JS)
-    # Find the cpp entry and check it carries available: false
     m = re.search(r"id:\s*\"cpp\"[\s\S]*?available:\s*(true|false)", text)
     assert m, "cpp entry not found in LANGUAGES catalog"
-    assert m.group(1) == "false"
+    assert m.group(1) == "true", (
+        "C++ should be available via JSCPP — see runCpp.ts"
+    )
+
+
+def test_run_cpp_helper_exists_and_lazy_loads_jscpp():
+    """The C++ runner must lazy-import JSCPP so it stays out of the eager
+    bundle for users who never pick C++."""
+    cpp_path = os.path.join(_REPO_ROOT, "frontend", "src", "lib", "runCpp.ts")
+    assert os.path.exists(cpp_path), "missing frontend/src/lib/runCpp.ts"
+    text = _read(cpp_path)
+    assert re.search(r"export\s+async\s+function\s+runCpp", text)
+    # Lazy import — not a top-level `import "JSCPP"`
+    assert "await import" in text
+    assert "JSCPP" in text
+
+
+def test_wasm_clang_replaced_with_jscpp():
+    """Bundle-size guardrail kept: wasm-clang (~30 MB) deliberately NOT
+    used. JSCPP is the chosen lighter alternative."""
+    pkg = _read(_PKG)
+    assert "wasm-clang" not in pkg
+    assert "@wasmer" not in pkg
+    assert "JSCPP" in pkg
 
 
 def test_languages_includes_python_and_javascript():
