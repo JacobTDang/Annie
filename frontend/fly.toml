@@ -1,0 +1,30 @@
+# Fly.io config for the Lumen frontend.
+#
+# Deploy (from repo root, since the Dockerfile context is the repo):
+#   fly launch --config frontend/fly.toml --name lumen-web --no-deploy
+#   fly deploy --config frontend/fly.toml
+#
+# The backend host is set via env so nginx points at the right place.
+# Local dev uses docker-compose where BACKEND_HOST=backend; on Fly we use the
+# private DNS form: <app>.internal.
+
+app = "lumen-web"
+primary_region = "iad"
+
+[build]
+  dockerfile = "frontend/Dockerfile"
+
+[env]
+  BACKEND_HOST = "lumen-api.internal"
+  BACKEND_PORT = "5000"
+
+[http_service]
+  internal_port = 80
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

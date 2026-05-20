@@ -1,5 +1,8 @@
 flask
 flask-cors
+# Production WSGI server — used in containerized deploys (Fly.io etc.). The
+# Flask dev server is not safe for production traffic.
+gunicorn
 google-genai
 manim
 openai

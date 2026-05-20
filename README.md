@@ -158,3 +158,29 @@ Current status: **286 unit tests passing**, frontend builds clean at ~345 kB ini
 4. (For LeetCode parser routing) add to `agent/leetcode_parser.py::_SCENE_SCHEMAS`
 
 For tool-composed scenes via the Lesson Director, you usually don't need a new scene class — extend `backend/schemas/tools.py` and `backend/scenes/tool_executor.py` instead.
+
+## Deploying to Fly.io
+
+Two apps, one repo. Both Dockerfiles already exist (Item #16). The Fly configs
+are at `fly.toml` (backend) and `frontend/fly.toml`. The setup is one-time per
+app; deploys after that are `fly deploy` (or use the manual GitHub Actions
+workflow at `.github/workflows/deploy.yml`).
+
+```bash
+# Backend (one time)
+fly launch --name lumen-api --no-deploy
+fly secrets set OPENROUTER_API_KEY=… GROQ_API_KEY=…
+fly volumes create lumen_media --size 1   # persists /app/backend/media
+fly deploy
+
+# Frontend (one time, from repo root)
+fly launch --config frontend/fly.toml --name lumen-web --no-deploy
+fly deploy --config frontend/fly.toml
+```
+
+The frontend's nginx config templates `${BACKEND_HOST}` at boot, so it talks
+to `lumen-api.internal` on Fly and to the docker-compose `backend` service
+locally — same image, no rebuild.
+
+Manual redeploys from GitHub: Actions → "deploy" workflow → Run workflow
+(needs `FLY_API_TOKEN` as a repository secret).

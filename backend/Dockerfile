@@ -38,4 +38,11 @@ EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -fsS http://localhost:5000/health || exit 1
 
-CMD ["python", "app.py"]
+# Production CMD: gunicorn with 2 workers + 3-minute timeout (Manim renders
+# can take ~60-180s). The Flask dev server is not safe for production.
+# `--access-logfile -` streams Gunicorn access logs to container stdout so
+# `fly logs` / `docker logs` show traffic.
+CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:5000", \
+     "--timeout", "180", \
+     "--access-logfile", "-", \
+     "app:create_app()"]

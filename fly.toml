@@ -1,0 +1,55 @@
+# Fly.io config for the Lumen backend (Item #16+18 follow-up).
+#
+# Deploy:
+#   fly launch --name lumen-api --no-deploy   # first time
+#   fly secrets set OPENROUTER_API_KEY=... GROQ_API_KEY=... GEMINI_API_KEY=...
+#   fly deploy
+#
+# Volume mount: persistent /app/backend/media for the local-storage cache and
+# pinned_index.json. If you flip LUMEN_STORAGE_BACKEND=s3, the volume can
+# shrink to ~100 MB (it just holds the SQLite jobs DB + pin index).
+
+app = "lumen-api"
+primary_region = "iad"
+
+[build]
+  dockerfile = "backend/Dockerfile"
+
+[env]
+  # Listen on Fly's internal port. The container exposes 5000.
+  PORT = "5000"
+  # Persist job state across deploys.
+  LUMEN_JOBS_DB = "/app/backend/media/jobs.db"
+  # Default to the LRU-managed local volume; flip to "s3" to use a bucket.
+  LUMEN_STORAGE_BACKEND = "local"
+  LUMEN_ENV = "production"
+
+[http_service]
+  internal_port = 5000
+  force_https = true
+  auto_stop_machines = "stop"   # zero-cost when idle
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 10
+    hard_limit = 20
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"   # Manim renders can spike >1 GB
+
+[mounts]
+  source = "lumen_media"
+  destination = "/app/backend/media"
+
+[checks]
+  [checks.health]
+    grace_period = "10s"
+    interval = "30s"
+    method = "get"
+    path = "/health"
+    port = 5000
+    timeout = "5s"
+    type = "http"

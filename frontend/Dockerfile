@@ -17,9 +17,16 @@ FROM nginx:1.27-alpine
 
 # Custom nginx config — proxies /api, /media, /status, /openapi.json,
 # /ask, /render etc. to the backend service, serves the SPA otherwise.
-COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+# We ship the conf as a TEMPLATE and substitute ${BACKEND_HOST} at container
+# start so the same image runs locally (docker-compose) and on Fly.
+COPY frontend/nginx.conf /etc/nginx/templates/default.conf.template
 COPY frontend/proxy_params.conf /etc/nginx/proxy_params.conf
 COPY --from=build /app/dist /usr/share/nginx/html
+
+# nginx:alpine bundles envsubst; the official image's entrypoint already
+# expands templates from /etc/nginx/templates → /etc/nginx/conf.d at boot.
+ENV BACKEND_HOST=backend
+ENV BACKEND_PORT=5000
 
 EXPOSE 80
 

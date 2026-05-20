@@ -1408,4 +1408,7 @@ def create_app(testing: bool = False) -> Flask:
 if __name__ == "__main__":
     # use_reloader=False: the dev reloader wipes the in-memory _jobs dict
     # mid-render whenever any file is touched, orphaning polling frontends.
-    create_app().run(debug=True, use_reloader=False, port=5000)
+    # host=0.0.0.0 + PORT env var so containerized deploys (Fly.io, Docker)
+    # can drive the bind address externally.
+    port = int(os.environ.get("PORT", "5000"))
+    create_app().run(debug=True, use_reloader=False, host="0.0.0.0", port=port)
