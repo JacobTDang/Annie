@@ -1,0 +1,67 @@
+# Lumen — local + prod-ish development stack.
+#
+# Usage:
+#   docker compose up --build       # full stack
+#   docker compose up backend       # backend only (e.g. against vite dev)
+#   docker compose down -v          # nuke including the media volume
+#
+# Required: a .env file at repo root with OPENROUTER_API_KEY etc.
+# See docs/SECRETS.md for the full env reference.
+
+services:
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: lumen-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # Persist job state across container restarts
+      LUMEN_JOBS_DB: /app/backend/media/jobs.db
+      # Use the local storage backend by default — flip to s3 in prod
+      LUMEN_STORAGE_BACKEND: ${LUMEN_STORAGE_BACKEND:-local}
+    volumes:
+      - lumen-media:/app/backend/media
+    ports:
+      - "5000:5000"
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: lumen-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: lumen-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - lumen-redis:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  lumen-media:
+  lumen-redis:
