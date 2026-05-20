@@ -154,24 +154,41 @@ def _get_or_create_doc(room_id: str):
 
     Returns None if y-py isn't installed — the relay still works in that
     case, just without persistence.
+
+    Uses double-checked locking so the disk read happens WITHOUT holding
+    ``_ROOMS_LOCK`` (post-review perf fix). Without this, every collab
+    operation on every other room blocked while we read a snapshot.
     """
     try:
         import y_py  # type: ignore
     except ImportError:
         return None
+
+    # Fast path — already created.
     with _ROOMS_LOCK:
         doc = _docs.get(room_id)
-        if doc is None:
-            doc = y_py.YDoc()
-            snapshot = load_room(room_id)
-            if snapshot:
-                try:
-                    y_py.apply_update(doc, snapshot)
-                except Exception:
-                    # Corrupt snapshot — start fresh; next save overwrites it.
-                    doc = y_py.YDoc()
-            _docs[room_id] = doc
+    if doc is not None:
         return doc
+
+    # Slow path: snapshot read happens OUTSIDE the lock so other rooms
+    # don't block. May race with another peer doing the same — we resolve
+    # via re-check under the lock below (first writer wins).
+    new_doc = y_py.YDoc()
+    snapshot = load_room(room_id)
+    if snapshot:
+        try:
+            y_py.apply_update(new_doc, snapshot)
+        except Exception:
+            # Corrupt snapshot — start fresh; next save overwrites it.
+            new_doc = y_py.YDoc()
+
+    with _ROOMS_LOCK:
+        existing = _docs.get(room_id)
+        if existing is not None:
+            # Another thread won the race — discard our fresh doc + return theirs
+            return existing
+        _docs[room_id] = new_doc
+        return new_doc
 
 
 def _apply_update_to_server_doc(room_id: str, update_bytes: bytes) -> None:
