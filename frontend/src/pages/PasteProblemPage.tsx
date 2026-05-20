@@ -8,7 +8,12 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Loader2, Upload, Search } from "lucide-react";
+import { Loader2, Upload, Search, Mic, MicOff } from "lucide-react";
+import {
+  isVoiceInputSupported,
+  createVoiceRecognizer,
+  type VoiceRecognizer,
+} from "../lib/voiceInput";
 import { usePyodide } from "../usePyodide";
 import { CodeEditorPanel } from "../CodeEditorPanel";
 import { MathContent } from "../MathContent";
@@ -198,6 +203,46 @@ const PasteProblemPage: React.FC<PasteProblemPageProps> = ({
 }) => {
   const [text, setText] = useState(initialText || "");
   const [state, setState] = useState<PasteState>({ kind: "idle" });
+
+  // Item #33 — voice input via browser SpeechRecognition. The recognizer is
+  // created lazily on first click so we don't request mic permission on page
+  // load. Recognizer is held in a ref because it has no React state.
+  const voiceSupported = isVoiceInputSupported();
+  const voiceRecogRef = useRef<VoiceRecognizer | null>(null);
+  const [listening, setListening] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+
+  const handleToggleVoice = useCallback(() => {
+    if (!voiceSupported) return;
+    if (voiceRecogRef.current?.isListening()) {
+      voiceRecogRef.current.stop();
+      return;
+    }
+    const rec = createVoiceRecognizer({
+      onTranscript: (transcript, isFinal) => {
+        if (!isFinal) return;  // only commit final chunks to avoid jitter
+        setText(prev => {
+          const sep = prev.length > 0 && !prev.endsWith(" ") ? " " : "";
+          return prev + sep + transcript;
+        });
+      },
+      onError: msg => {
+        setVoiceError(msg);
+        setListening(false);
+      },
+      onEnd: () => setListening(false),
+    });
+    if (!rec) return;
+    voiceRecogRef.current = rec;
+    setVoiceError(null);
+    setListening(true);
+    rec.start();
+  }, [voiceSupported]);
+
+  // Make sure we release the mic if the component unmounts mid-record.
+  useEffect(() => {
+    return () => { voiceRecogRef.current?.abort(); };
+  }, []);
   const [followUps, setFollowUps] = useState<FollowUpTurn[]>([]);
   const [followUpInput, setFollowUpInput] = useState("");
   const [shareCode, setShareCode] = useState<string | null>(null);
@@ -1019,6 +1064,40 @@ const PasteProblemPage: React.FC<PasteProblemPageProps> = ({
             {text.length} / 4000 — Cmd/Ctrl+Enter to visualize
           </span>
           <div className="flex items-center gap-2">
+            {voiceSupported && (
+              <motion.button
+                onClick={handleToggleVoice}
+                disabled={isBusy}
+                whileHover={isBusy ? {} : { scale: 1.02 }}
+                whileTap={isBusy ? {} : { scale: 0.97 }}
+                transition={{ duration: 0.15 }}
+                aria-label={listening ? "Stop recording" : "Voice input"}
+                title={
+                  voiceError
+                    ? `Voice input failed: ${voiceError}`
+                    : listening
+                      ? "Recording — click to stop"
+                      : "Record a voice prompt"
+                }
+                className="px-3 py-2 rounded-md flex items-center gap-1.5"
+                style={{
+                  background: listening ? "rgba(239, 68, 68, 0.15)" : "transparent",
+                  color: listening ? "#fca5a5" : C.text,
+                  border: `1px solid ${listening ? "rgba(239, 68, 68, 0.45)" : C.borderAlt}`,
+                  fontFamily: BODY,
+                  fontSize: 12,
+                  cursor: isBusy ? "not-allowed" : "pointer",
+                  opacity: isBusy ? 0.5 : 1,
+                }}
+              >
+                {listening ? (
+                  <MicOff size={12} strokeWidth={2} />
+                ) : (
+                  <Mic size={12} strokeWidth={2} />
+                )}
+                {listening ? "Listening…" : "Voice"}
+              </motion.button>
+            )}
             {leetcodeUrlMatch && (
               <motion.button
                 onClick={handleFetchUrl}
