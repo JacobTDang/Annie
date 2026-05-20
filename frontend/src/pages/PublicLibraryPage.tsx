@@ -34,7 +34,7 @@ export const PublicLibraryPage: React.FC = () => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${flaskBase}/api/public/recent`);
+        const res = await fetch(`${flaskBase()}/api/public/recent`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
         if (!cancelled) setShares(json.shares ?? []);

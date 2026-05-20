@@ -101,7 +101,7 @@ export const PrereqGraphPage: React.FC = () => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${flaskBase}/api/prereqs`);
+        const res = await fetch(`${flaskBase()}/api/prereqs`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json: PrereqGraph = await res.json();
         if (!cancelled) {
