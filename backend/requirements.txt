@@ -7,6 +7,10 @@ gunicorn
 # top of simple_websocket; works under the same gunicorn/Flask process as
 # the rest of the API.
 flask-sock
+# Yjs CRDT in Python — server holds its own copy of each collab room's Y.Doc
+# so updates persist across restarts and late joiners can sync to the
+# canonical state. Rust-backed binding; pre-built wheels on PyPI for Win/Mac/Linux.
+y-py
 google-genai
 manim
 openai

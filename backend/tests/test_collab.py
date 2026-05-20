@@ -12,13 +12,19 @@ import collab
 
 
 @pytest.fixture(autouse=True)
-def _reset_rooms():
-    """Each test starts with an empty room registry."""
+def _reset_rooms(tmp_path, monkeypatch):
+    """Each test starts with an empty room registry + tmp collab dir so
+    persistence tests don't leak files into backend/media/collab/."""
+    monkeypatch.setattr(collab, "_collab_dir", str(tmp_path / "collab"))
     with collab._ROOMS_LOCK:
         collab._rooms.clear()
+        collab._docs.clear()
+        collab._dirty.clear()
     yield
     with collab._ROOMS_LOCK:
         collab._rooms.clear()
+        collab._docs.clear()
+        collab._dirty.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -199,3 +205,219 @@ def test_collab_route_attached_to_app():
     app = create_app(testing=True)
     rules = {r.rule for r in app.url_map.iter_rules()}
     assert "/api/collab/<room_id>" in rules
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# y-protocol varuint encode/decode
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("n", [0, 1, 127, 128, 255, 16384, 1_000_000])
+def test_varuint_roundtrip(n):
+    encoded = collab._write_varuint(n)
+    decoded, offset = collab._read_varuint(encoded, 0)
+    assert decoded == n
+    assert offset == len(encoded)
+
+
+def test_varuint_truncated_raises():
+    with pytest.raises(ValueError, match="truncated"):
+        collab._read_varuint(b"\x80", 0)   # continuation bit set, no follow-up
+
+
+def test_varuint_payload_roundtrip():
+    payload = b"hello world" * 10
+    framed = collab._write_varuint_payload(payload)
+    out, offset = collab._read_varuint_payload(framed, 0)
+    assert out == payload
+    assert offset == len(framed)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Persistence — snapshot ↔ load round-trip via y-py
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _have_y_py() -> bool:
+    try:
+        import y_py  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
+def test_snapshot_then_load_round_trip():
+    import y_py
+    doc = y_py.YDoc()
+    text = doc.get_text("monaco")
+    with doc.begin_transaction() as txn:
+        text.extend(txn, "hello world")
+    encoded = y_py.encode_state_as_update(doc)
+
+    collab.snapshot_room("persist-1", encoded)
+    loaded = collab.load_room("persist-1")
+    assert loaded == encoded
+
+    # Reload into a fresh doc and confirm content survived
+    doc2 = y_py.YDoc()
+    y_py.apply_update(doc2, loaded)
+    assert str(doc2.get_text("monaco")) == "hello world"
+
+
+def test_load_missing_room_returns_none():
+    assert collab.load_room("never-existed") is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Server-side Y.Doc lifecycle
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
+def test_get_or_create_doc_loads_from_snapshot():
+    import y_py
+    # Pre-seed a snapshot on disk
+    doc = y_py.YDoc()
+    with doc.begin_transaction() as txn:
+        doc.get_text("monaco").extend(txn, "preexisting")
+    collab.snapshot_room("with-snapshot", y_py.encode_state_as_update(doc))
+
+    # First _get_or_create_doc call should load the snapshot
+    server_doc = collab._get_or_create_doc("with-snapshot")
+    assert server_doc is not None
+    assert str(server_doc.get_text("monaco")) == "preexisting"
+
+
+@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
+def test_room_empties_trigger_final_persist(tmp_path, monkeypatch):
+    """When the last peer leaves, the server's Y.Doc must be flushed so
+    next-time joiners get the latest state."""
+    import y_py
+    sock = MagicMock()
+    collab._add_socket("empty-flush", sock)
+    # Manually populate the server doc + mark dirty
+    doc = collab._get_or_create_doc("empty-flush")
+    with doc.begin_transaction() as txn:
+        doc.get_text("monaco").extend(txn, "just before disconnect")
+    collab._dirty.add("empty-flush")
+
+    collab._remove_socket("empty-flush", sock)
+    # Snapshot should exist on disk now
+    blob = collab.load_room("empty-flush")
+    assert blob is not None
+    # Round-trip to verify content
+    doc2 = y_py.YDoc()
+    y_py.apply_update(doc2, blob)
+    assert str(doc2.get_text("monaco")) == "just before disconnect"
+
+
+@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
+def test_room_empties_drops_doc_from_memory():
+    """After the last peer leaves, the in-memory Y.Doc must be released
+    so room memory doesn't grow unbounded."""
+    sock = MagicMock()
+    collab._add_socket("evict-me", sock)
+    collab._get_or_create_doc("evict-me")
+    assert "evict-me" in collab._docs
+    collab._remove_socket("evict-me", sock)
+    assert "evict-me" not in collab._docs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# y-protocol message handling
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
+def test_sync_step_1_yields_sync_step_2():
+    """When a client sends Sync Step 1 (state vector), the server must
+    reply with Sync Step 2 (the diff). Sub-type byte 1 follows the type."""
+    import y_py
+    # Seed the server doc with some content so there's a diff to send
+    doc = collab._get_or_create_doc("sync-test")
+    with doc.begin_transaction() as txn:
+        doc.get_text("monaco").extend(txn, "server-state")
+
+    # Build a Sync Step 1 with an EMPTY state vector (client knows nothing)
+    empty_state_vector = y_py.encode_state_vector(y_py.YDoc())
+    msg = bytes([collab.MSG_SYNC, collab.SYNC_STEP_1]) \
+          + collab._write_varuint_payload(empty_state_vector)
+
+    reply = collab._handle_sync_message("sync-test", msg)
+    assert reply is not None
+    assert reply[0] == collab.MSG_SYNC
+    # Sub-type follows; varuint-encoded but for small values it's just the byte
+    sub_type, _ = collab._read_varuint(reply, 1)
+    assert sub_type == collab.SYNC_STEP_2
+
+
+@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
+def test_sync_update_applies_to_server_doc():
+    """Sync Update messages must be folded into the server's Y.Doc so it
+    stays canonical."""
+    import y_py
+    # Simulate a client-side doc with content, then encode its update
+    client_doc = y_py.YDoc()
+    with client_doc.begin_transaction() as txn:
+        client_doc.get_text("monaco").extend(txn, "from-client")
+    update_bytes = y_py.encode_state_as_update(client_doc)
+
+    msg = bytes([collab.MSG_SYNC, collab.SYNC_UPDATE]) \
+          + collab._write_varuint_payload(update_bytes)
+    collab._handle_sync_message("update-test", msg)
+
+    server_doc = collab._docs["update-test"]
+    assert str(server_doc.get_text("monaco")) == "from-client"
+
+
+def test_garbage_messages_dont_crash_handler():
+    """Malformed inbound bytes from a buggy/hostile client must not blow up
+    the relay thread."""
+    # Truncated varuint after a valid type byte
+    assert collab._handle_sync_message("rA", bytes([collab.MSG_SYNC, 0x80])) is None
+    # Empty message
+    assert collab._handle_sync_message("rB", b"") is None
+    # Non-sync type byte (awareness etc.) — server doesn't reply
+    assert collab._handle_sync_message("rC", bytes([collab.MSG_AWARENESS, 0])) is None
+
+
+@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
+def test_full_handshake_persists_across_restart(tmp_path, monkeypatch):
+    """End-to-end: client A sends an update, room empties (persist trigger),
+    client B reconnects, server replies with Sync Step 2 containing A's content."""
+    import y_py
+
+    # Client A: connect, send an update, disconnect
+    sockA = MagicMock()
+    collab._add_socket("e2e", sockA)
+    client_a_doc = y_py.YDoc()
+    with client_a_doc.begin_transaction() as txn:
+        client_a_doc.get_text("monaco").extend(txn, "persisted-by-A")
+    update_a = y_py.encode_state_as_update(client_a_doc)
+    msg_a = bytes([collab.MSG_SYNC, collab.SYNC_UPDATE]) \
+            + collab._write_varuint_payload(update_a)
+    collab._handle_sync_message("e2e", msg_a)
+    collab._remove_socket("e2e", sockA)
+    # Server should have flushed to disk on empty
+    assert collab.load_room("e2e") is not None
+    # And freed memory
+    assert "e2e" not in collab._docs
+
+    # Client B: connect, send Sync Step 1 with an empty state vector
+    sockB = MagicMock()
+    collab._add_socket("e2e", sockB)
+    empty_sv = y_py.encode_state_vector(y_py.YDoc())
+    step1 = bytes([collab.MSG_SYNC, collab.SYNC_STEP_1]) \
+            + collab._write_varuint_payload(empty_sv)
+    reply = collab._handle_sync_message("e2e", step1)
+    assert reply is not None
+
+    # B applies the server's Step 2 reply — should contain A's content
+    # Reply frame: [type][sub_type][varuint(len)][update]
+    sub_type, offset = collab._read_varuint(reply, 1)
+    assert sub_type == collab.SYNC_STEP_2
+    update_bytes, _ = collab._read_varuint_payload(reply, offset)
+    client_b_doc = y_py.YDoc()
+    y_py.apply_update(client_b_doc, update_bytes)
+    assert str(client_b_doc.get_text("monaco")) == "persisted-by-A"
