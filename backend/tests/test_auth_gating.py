@@ -302,6 +302,61 @@ def test_quiz_attempt_anonymous_returns_204(client):
     assert res.status_code == 204
 
 
+def test_quiz_attempt_concurrent_writes_dont_drop(authed_client, tmp_path, monkeypatch):
+    """Post-review regression: without _QUIZ_ATTEMPTS_LOCK, concurrent POSTs
+    both read the same list, both append, both write — earlier attempts get
+    lost. Hammer with multiple threads and assert every attempt landed."""
+    import threading as _th
+
+    # Mirror the production path: app reads __file__'s directory + /data/quiz_attempts.json
+    # Patch os.path.dirname to redirect when called with anything ending in app.py
+    import app as _app
+    real_dirname = os.path.dirname
+
+    def _patched_dirname(path):
+        if isinstance(path, str) and path.endswith("app.py"):
+            return str(tmp_path)
+        return real_dirname(path)
+    monkeypatch.setattr(_app.os.path, "dirname", _patched_dirname)
+
+    token = _make_token("alice")
+    n_threads = 8
+    per_thread = 25
+    barrier = _th.Barrier(n_threads)
+    errors: list = []
+
+    def hammer():
+        barrier.wait()
+        for i in range(per_thread):
+            try:
+                res = authed_client.post(
+                    "/api/quiz-attempt",
+                    json={"scene": "tangent_line", "correct": i % 2 == 0,
+                          "question_index": i},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if res.status_code not in (200, 500):
+                    errors.append(f"unexpected status: {res.status_code}")
+            except Exception as exc:
+                errors.append(str(exc))
+
+    threads = [_th.Thread(target=hammer) for _ in range(n_threads)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    assert not errors, f"errors during hammer: {errors[:5]}"
+
+    attempts_file = tmp_path / "data" / "quiz_attempts.json"
+    # If the path-patching didn't catch the write site we'd skip this assertion
+    if not attempts_file.exists():
+        pytest.skip("quiz_attempts.json not produced under tmp — path patch missed")
+    with open(attempts_file) as fh:
+        attempts = json.load(fh)
+    assert len(attempts) == n_threads * per_thread, (
+        f"lost writes: got {len(attempts)} of {n_threads * per_thread}"
+    )
+
+
 def test_quiz_attempt_authed_persists(authed_client, tmp_path, monkeypatch):
     """With a valid token, the attempt is appended to quiz_attempts.json
     under the user_id from the JWT."""

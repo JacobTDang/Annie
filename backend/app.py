@@ -276,6 +276,11 @@ _SHARES_LOCK = threading.Lock()
 _SHARE_ALPHABET = string.ascii_letters + string.digits  # base62
 _SHARE_CODE_LEN = 8
 
+# Quiz-attempt log lock — serializes read-modify-write on quiz_attempts.json.
+# Without this, concurrent POSTs to /api/quiz-attempt both load the same list,
+# both append, both rewrite — earlier attempts get clobbered.
+_QUIZ_ATTEMPTS_LOCK = threading.Lock()
+
 
 def _load_shares() -> dict:
     if not os.path.exists(_SHARES_PATH):
@@ -1358,18 +1363,21 @@ def create_app(testing: bool = False) -> Flask:
         }
         # Append-only JSON list. Best-effort durability — operator can move
         # this to SQLite/Supabase later by swapping the read+write helpers.
+        # Lock the entire read-modify-write so concurrent POSTs don't clobber
+        # each other's appends (post-review fix).
         try:
-            existing: list = []
-            if os.path.exists(attempts_path):
-                with open(attempts_path, encoding="utf-8") as fh:
-                    raw = json.load(fh)
-                if isinstance(raw, list):
-                    existing = raw
-            existing.append(record)
-            tmp = attempts_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(existing, fh, indent=2)
-            os.replace(tmp, attempts_path)
+            with _QUIZ_ATTEMPTS_LOCK:
+                existing: list = []
+                if os.path.exists(attempts_path):
+                    with open(attempts_path, encoding="utf-8") as fh:
+                        raw = json.load(fh)
+                    if isinstance(raw, list):
+                        existing = raw
+                existing.append(record)
+                tmp = attempts_path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(existing, fh, indent=2)
+                os.replace(tmp, attempts_path)
         except OSError as exc:
             app.logger.warning("quiz-attempt write failed: %s", exc)
             return jsonify({"error": "store failed"}), 500
