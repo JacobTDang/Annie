@@ -431,6 +431,24 @@ def create_app(testing: bool = False) -> Flask:
         from openapi_spec import build_openapi_spec
         return jsonify(build_openapi_spec())
 
+    @app.get("/api/prereqs")
+    def api_prereqs():
+        """Item #35 — return the hand-curated topic prerequisite graph.
+
+        Response: { "domains": { "calculus": {scene: [prereq, ...]}, ... } }
+        Excludes the ``_meta`` block from the response.
+        """
+        path = os.path.join(os.path.dirname(__file__), "prereqs.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError) as exc:
+            app.logger.exception("prereqs.json read failed")
+            return jsonify({"error": "prereqs unavailable", "detail": str(exc)}), 500
+        # Strip the _meta block — pure data for the frontend
+        domains = {k: v for k, v in data.items() if not k.startswith("_")}
+        return jsonify({"domains": domains})
+
     @app.get("/topics")
     def topics():
         return jsonify({"topics": _TOPICS})

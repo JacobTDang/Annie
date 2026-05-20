@@ -1,0 +1,43 @@
+{
+  "_meta": {
+    "description": "Hand-curated prerequisite graph (Item #35). Each scene maps to a list of scene keys that should be understood first. Empty list = foundational topic.",
+    "version": 1
+  },
+  "calculus": {
+    "function_plot":       [],
+    "limit":               ["function_plot"],
+    "secant_line":         ["function_plot"],
+    "tangent_line":        ["secant_line", "limit"],
+    "critical_points":     ["tangent_line"],
+    "riemann_sum":         ["function_plot", "limit"],
+    "area_between_curves": ["riemann_sum"],
+    "u_substitution":      ["riemann_sum"],
+    "improper_integral":   ["riemann_sum", "limit"],
+    "average_value":       ["riemann_sum"],
+    "volume_revolution":   ["riemann_sum"],
+    "washer_method":       ["volume_revolution"],
+    "shell_method":        ["volume_revolution"],
+    "cross_section":       ["volume_revolution"],
+    "arc_length":          ["riemann_sum"],
+    "taylor_series":       ["tangent_line", "limit"]
+  },
+  "algebra": {
+    "linear_function":     []
+  },
+  "dsa": {
+    "bubble_sort":         [],
+    "merge_sort":          ["bubble_sort"],
+    "quick_sort":          ["bubble_sort"],
+    "array_pointer":       [],
+    "two_pointers_opposite": ["array_pointer"],
+    "two_pointers_same_dir": ["array_pointer"],
+    "sliding_window":      ["array_pointer"],
+    "sliding_window_variable": ["sliding_window"],
+    "binary_search_index": ["array_pointer"],
+    "stack_queue":         [],
+    "linked_list":         [],
+    "tree_traversal":      ["linked_list"],
+    "graph_traversal":     ["tree_traversal"],
+    "dp_array":            ["array_pointer"]
+  }
+}
