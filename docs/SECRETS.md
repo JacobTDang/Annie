@@ -75,6 +75,24 @@ pattern:
 
 ---
 
+## Installing TTS (optional)
+
+`LUMEN_TTS_ENABLED=1` turns on narration mux, but the base
+`backend/requirements.txt` ships no TTS provider — without one, the pipeline
+writes a silent placeholder track. To get real audio, install the extras file:
+
+```bash
+pip install -r backend/requirements-extras.txt
+```
+
+This adds `edge-tts` (Microsoft Edge's free online TTS, ~5 MB). The
+`agent/tts.py` provider chain detects whichever package is installed
+(`edge-tts` first, then `pyttsx3` if you uncomment that line, then silent
+fallback). The CI integration job runs the same install step automatically
+when triggered via Actions workflow_dispatch.
+
+---
+
 ## Rotation & hygiene
 
 - **Never** commit a real key, even in a comment or a `.example` file. The

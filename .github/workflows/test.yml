@@ -125,6 +125,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
+          # Item #8 follow-up: real TTS providers (edge-tts) live in the
+          # extras file so the base install stays slim. Integration tests
+          # exercise the audio pipeline so we want the providers available.
+          pip install -r backend/requirements-extras.txt
 
       - name: Install Manim system deps
         run: |

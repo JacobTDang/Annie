@@ -1,0 +1,18 @@
+# Optional dependencies — install when you need TTS narration to actually
+# produce audio (LUMEN_TTS_ENABLED=1). Without one of these installed,
+# `agent/tts.py` falls back to a silent placeholder track so the pipeline
+# still works.
+#
+#   pip install -r backend/requirements-extras.txt
+#
+# Provider chain (preferred → fallback) — first installed package wins:
+#   1. edge-tts   — Microsoft Edge's free online TTS. ~5 MB install.
+#                   Best voice quality, requires network access at render time.
+#   2. pyttsx3    — offline OS-native TTS (SAPI on Windows, NSSpeech on macOS,
+#                   eSpeak on Linux). ~1 MB install. Robotic but offline.
+
+edge-tts>=6.1.9
+
+# Uncomment to add the offline fallback. Note: pyttsx3 imports `pywin32` on
+# Windows which has a heavier install footprint than edge-tts alone.
+# pyttsx3>=2.90
