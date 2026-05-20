@@ -11,3 +11,7 @@ python-dotenv
 matplotlib
 pytest
 pytest-mock
+# YAML parser — used by test_docker_compose.py and by future ops tooling.
+# manim transitively pulls this in but the dep is fragile to upstream changes;
+# pin it here so a fresh install doesn't break the test suite.
+pyyaml
