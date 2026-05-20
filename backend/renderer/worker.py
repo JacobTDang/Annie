@@ -467,6 +467,36 @@ def get_job(job_id: str) -> dict | None:
     return _jobs.get(job_id)
 
 
+def shutdown(wait: bool = True, timeout: float = 5.0) -> None:
+    """Drain the in-flight job queue cooperatively.
+
+    Used by:
+      - pytest session teardown (conftest.py) so tests that submit lessons
+        but don't poll completion don't trigger
+        ``RuntimeError: cannot schedule new futures after interpreter shutdown``.
+      - Production graceful-shutdown hooks (e.g. signal handlers).
+
+    Safe to call multiple times. The InProcessQueue backend's ThreadPoolExecutor
+    accepts wait + (in modern Python) a timeout; if the underlying pool doesn't
+    expose timeout, we fall back to a plain shutdown(wait=wait).
+    """
+    q = globals().get("_default_queue")
+    if q is None:
+        return
+    try:
+        # InProcessQueue exposes .shutdown(wait); RedisQueue doesn't need one
+        # (Redis owns the job lifecycle).
+        if hasattr(q, "shutdown"):
+            try:
+                q.shutdown(wait=wait)
+            except TypeError:
+                # Older signature without kwargs
+                q.shutdown()
+    except Exception:
+        # Best-effort drain — never raise from a teardown helper
+        pass
+
+
 # Manim's tqdm progress bar emits lines like:
 #   "Animation 0:  42%|████▏      | 10/24 [00:00<00:01, ...]"
 # We track the most recent (animation_idx, frac_in_anim) and combine with the
@@ -702,6 +732,10 @@ def _run_lesson(lesson_id: str, steps: list):
                 f.result()
     finally:
         progress_stop.set()
+        # Join the aggregator so it doesn't outlive the lesson and try to
+        # write to _jobs after interpreter shutdown. The thread polls
+        # `stop_event.wait(0.25)` so 2s is generous.
+        progress_thread.join(timeout=2.0)
 
     # Check for any render errors
     for jid in step_job_ids:
