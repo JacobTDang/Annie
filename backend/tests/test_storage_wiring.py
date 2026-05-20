@@ -128,6 +128,51 @@ def test_worker_source_no_longer_uses_shutil_copyfile_for_lessons():
     assert not bad, f"shutil.copyfile to _LESSONS_DIR still present: {bad}"
 
 
+def test_storage_failure_marks_lesson_error(mocker, isolated_storage):
+    """Post-review regression: when _storage.put fails (S3 timeout etc.),
+    _run_lesson must mark the lesson errored — NOT silently fall back to
+    the per-job src_url which `cleanup_old_jobs` deletes after 1h."""
+    # Stub the inner step so _run_lesson sees a "done" inner job with a
+    # plausible src URL
+    def stub_run_render(job_id, scene_type, params):
+        # Write a real file under media/jobs/<id>/ so src_path resolves
+        job_dir = os.path.join(str(isolated_storage.jobs_dir), job_id)
+        os.makedirs(job_dir, exist_ok=True)
+        src = os.path.join(job_dir, "file.mp4")
+        with open(src, "wb") as fh:
+            fh.write(b"\x00" * 32)
+        rel = os.path.relpath(src, isolated_storage.media_dir).replace("\\", "/")
+        worker._jobs[job_id] = {
+            "status": "done", "url": f"/media/{rel}",
+            "error": None, "progress": 1.0, "stage": "done",
+        }
+    mocker.patch.object(worker, "_run_render", stub_run_render)
+    mocker.patch.object(worker, "_cache_lookup", return_value=None)
+
+    # Force storage.put to raise — simulates S3 outage / disk full
+    mocker.patch.object(
+        worker._storage, "put",
+        side_effect=OSError("simulated storage outage"),
+    )
+
+    # Seed the outer lesson record like submit_lesson would
+    lesson_id = "lesson-storage-fail"
+    worker._jobs[lesson_id] = {
+        "status": "pending", "url": None, "error": None,
+        "progress": 0.0, "stage": "queued",
+    }
+    step = SimpleNamespace(tool="x", params={}, caption="")
+    worker._run_lesson(lesson_id, [step])
+
+    rec = worker._jobs.get(lesson_id)
+    assert rec is not None
+    assert rec["status"] == "error", (
+        f"lesson should be marked failed when storage.put raises; got {rec!r}"
+    )
+    assert rec["url"] is None, "failed lesson must NOT carry a will-404 url"
+    assert "storage upload failed" in (rec.get("error") or "").lower()
+
+
 def test_run_lesson_writes_to_temp_dir_before_uploading():
     """Stitching must happen in _TEMP_DIR so S3 backend works (ffmpeg needs
     a local target before storage.put uploads). Previously stitched directly

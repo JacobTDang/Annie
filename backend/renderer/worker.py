@@ -755,16 +755,23 @@ def _run_lesson(lesson_id: str, steps: list):
         src_path = os.path.join(_MEDIA_DIR, src_url.removeprefix("/media/"))
         try:
             final_url = _storage.put(src_path, _lesson_key(lesson_id))
-            cached = True
         except Exception as exc:
-            # Fall back to the original URL if upload fails — caching skipped.
+            # Storage upload failed (S3 timeout, disk full, etc.). Don't
+            # fall back to src_url — that points into media/jobs/<id>/
+            # which cleanup_old_jobs deletes after ~1h, leaving the user
+            # with a video that 404s. Mark the lesson failed so the
+            # frontend can re-render. Post-review fix.
             print(f"[worker] storage.put failed (single-step): {exc}")
-            final_url = src_url
-            cached = False
+            _jobs[lesson_id] = {
+                "status": "error", "url": None,
+                "error": f"storage upload failed: {exc}",
+                "progress": _jobs[lesson_id].get("progress", 0.95),
+                "stage": "error",
+            }
+            return
         _jobs[lesson_id] = {"status": "done", "url": final_url, "error": None,
                             "progress": 1.0, "stage": "done"}
-        if cached:
-            _cache_store(cache_key, lesson_id)
+        _cache_store(cache_key, lesson_id)
         return
 
     # Multi-step: announce stitching stage before invoking ffmpeg
