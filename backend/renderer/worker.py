@@ -705,7 +705,8 @@ def _maybe_apply_tts(lesson_id: str, steps: list, stitched_path: str) -> None:
 # inner lesson's state into the outer job for unified status polling.
 
 def submit_direct_lesson(question: str, style: str | None = None,
-                          target_minutes: float = 1.5) -> str:
+                          target_minutes: float = 1.5,
+                          difficulty_hint: str | None = None) -> str:
     """Submit a Lesson Director lesson and return a job_id immediately.
 
     ``style`` (optional): one of intuition_first | rigor_first | socratic | speedrun.
@@ -725,14 +726,15 @@ def submit_direct_lesson(question: str, style: str | None = None,
                      "progress": 0.0, "stage": "planning_narrative"}
     threading.Thread(
         target=_run_direct_lesson,
-        args=(job_id, question, style, target_minutes),
+        args=(job_id, question, style, target_minutes, difficulty_hint),
         daemon=True,
     ).start()
     return job_id
 
 
 def _run_direct_lesson(job_id: str, question: str, style: str | None = None,
-                        target_minutes: float = 1.5):
+                        target_minutes: float = 1.5,
+                        difficulty_hint: str | None = None):
     """Background worker: agent planning + submit_lesson + state mirror.
 
     Imports the agent lazily to avoid a circular import (lesson_director
@@ -755,7 +757,9 @@ def _run_direct_lesson(job_id: str, question: str, style: str | None = None,
         _trace_mod.set_current(render_trace)
 
         stage_start = _t.perf_counter()
-        narrative = narrative_plan(question, style=style, target_minutes=target_minutes)
+        narrative = narrative_plan(question, style=style,
+                                    target_minutes=target_minutes,
+                                    difficulty_hint=difficulty_hint)
         render_trace.add_stage(
             "planning_narrative",
             int((_t.perf_counter() - stage_start) * 1000),

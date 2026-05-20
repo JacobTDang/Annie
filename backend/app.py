@@ -304,6 +304,20 @@ _TARGET_MINUTES_MIN = 0.5
 _TARGET_MINUTES_MAX = 10.0
 _TARGET_MINUTES_DEFAULT = 1.5
 
+_VALID_DIFFICULTY_HINTS = frozenset({"extend", "normal", "skip"})
+
+
+def _parse_difficulty_hint(body: dict) -> str | None:
+    """Read body['difficulty_hint']. Unknown / missing values normalize to None.
+
+    Strict validation isn't useful here — an unrecognized hint just means
+    "use defaults", same as not sending one.
+    """
+    val = body.get("difficulty_hint")
+    if isinstance(val, str) and val in _VALID_DIFFICULTY_HINTS:
+        return val
+    return None
+
 
 def _parse_target_minutes(body: dict):
     """Read body['target_minutes'] with default + bounds.
@@ -1021,8 +1035,10 @@ def create_app(testing: bool = False) -> Flask:
         target_minutes = _parse_target_minutes(body)
         if isinstance(target_minutes, tuple):
             return target_minutes  # (jsonify, status)
+        difficulty_hint = _parse_difficulty_hint(body)
         job_id = submit_direct_lesson(question, style=style,
-                                       target_minutes=target_minutes)
+                                       target_minutes=target_minutes,
+                                       difficulty_hint=difficulty_hint)
         return jsonify({"job_id": job_id}), 202
 
     @app.post("/api/direct-lesson-stream")
@@ -1060,6 +1076,7 @@ def create_app(testing: bool = False) -> Flask:
         target_minutes = _parse_target_minutes(body)
         if isinstance(target_minutes, tuple):
             return target_minutes
+        difficulty_hint = _parse_difficulty_hint(body)
 
         def _sse(event: str, data) -> str:
             payload = data if isinstance(data, str) else json.dumps(data)
@@ -1069,7 +1086,8 @@ def create_app(testing: bool = False) -> Flask:
             try:
                 yield _sse("stage", "planning_narrative")
                 narrative = _np(question, style=style,
-                                 target_minutes=target_minutes)
+                                 target_minutes=target_minutes,
+                                 difficulty_hint=difficulty_hint)
                 yield _sse("narrative", narrative.model_dump())
 
                 yield _sse("stage", "building_scenes")

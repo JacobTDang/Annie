@@ -169,6 +169,33 @@ NARRATIVE_STYLES: dict[str, str] = {
 VALID_STYLES: frozenset[str] = frozenset(NARRATIVE_STYLES.keys())
 
 
+_DIFFICULTY_HINTS = {
+    "extend": (
+        "DIFFICULTY: The viewer has historically STRUGGLED with this topic "
+        "(quiz accuracy < 50%). Extend the aha-moment scene with at least "
+        "ONE additional concrete worked example. Slow the pacing — use more "
+        "pause(beats=2) calls around the invariant. Restate the core insight "
+        "twice, first informally then with precision."
+    ),
+    "skip": (
+        "DIFFICULTY: The viewer has MASTERED this topic (quiz accuracy >= 90%). "
+        "Produce a FAST RECAP, not a tutorial. Cap at 2 scenes. Skip context-"
+        "setting. Open directly with the insight, close with the result."
+    ),
+}
+
+
+def _difficulty_hint(hint: str | None) -> str:
+    """Map a difficulty hint string into a system-prompt prefix.
+
+    Returns empty string for None / "normal" / unknown values — those use
+    the default narrative pacing.
+    """
+    if not hint or hint == "normal":
+        return ""
+    return _DIFFICULTY_HINTS.get(hint, "")
+
+
 def _length_hint(target_minutes: float) -> str:
     """Map a target duration to a scene-count + density guidance string."""
     if target_minutes < 1.0:
@@ -186,7 +213,8 @@ def _length_hint(target_minutes: float) -> str:
 
 def narrative_plan(question: str, max_retries: int = 2,
                     style: str | None = None,
-                    target_minutes: float = 1.5) -> NarrativePlan:
+                    target_minutes: float = 1.5,
+                    difficulty_hint: str | None = None) -> NarrativePlan:
     if not question.strip():
         raise ValueError("question is required")
     system = _NARRATIVE_SYSTEM
@@ -196,6 +224,12 @@ def narrative_plan(question: str, max_retries: int = 2,
             system = f"{style_hint}\n\n{system}"
     # Length hint always prepended — defaults bias toward the ~1.5min sweet spot.
     system = f"{_length_hint(target_minutes)}\n\n{system}"
+    # Item #34 — adaptive difficulty: if the user has struggled with this
+    # topic in past quizzes, extend the insight; if they've mastered it,
+    # produce a fast recap. The frontend supplies the hint.
+    diff = _difficulty_hint(difficulty_hint)
+    if diff:
+        system = f"{diff}\n\n{system}"
     last_error: Exception = ValueError("no attempts")
     for _ in range(max_retries):
         try:
@@ -554,7 +588,8 @@ def _build_scene_safe(
 
 def direct_lesson(question: str, max_retries: int = 2,
                    style: str | None = None,
-                   target_minutes: float = 1.5) -> LessonPlan:
+                   target_minutes: float = 1.5,
+                   difficulty_hint: str | None = None) -> LessonPlan:
     """
     Full pipeline: narrative plan → build each scene in parallel → LessonPlan.
 
@@ -567,7 +602,8 @@ def direct_lesson(question: str, max_retries: int = 2,
     to ~4s regardless of scene count (N = 2-4 scenes).
     """
     narrative = narrative_plan(question, max_retries=max_retries, style=style,
-                                target_minutes=target_minutes)
+                                target_minutes=target_minutes,
+                                difficulty_hint=difficulty_hint)
 
     # Pass sequential context hints (each scene's objective) for continuity.
     # Even though builds run in parallel, the context is the planned objective
