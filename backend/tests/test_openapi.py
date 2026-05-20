@@ -34,17 +34,43 @@ def test_openapi_documents_critical_endpoints(client):
     res = client.get("/openapi.json")
     spec = res.get_json()
     expected = [
+        # Core
         "/health",
         "/ask",
         "/render",
         "/status/{job_id}",
+        # Agent path
         "/api/direct-lesson",
         "/api/direct-lesson-stream",
+        # Sharing
         "/api/share",
         "/api/share/{code}",
+        "/api/share/mine",
+        "/api/public/recent",
+        # Pinning + library
+        "/api/pin",
+        "/api/pin/{job_id}",
+        # Parser surface (frontend's primary path)
+        "/api/parse-problem-v2",
+        "/api/parse-followup",
+        "/api/parse-leetcode",
+        "/api/fetch-leetcode",
+        # Multi-scene + breakdown + quiz
+        "/api/render-lesson",
+        "/api/breakdown",
+        "/api/quiz",
+        "/api/quiz-attempt",
+        # OCR / notes
+        "/api/ocr",
+        "/api/format-note",
+        # Topics + prereqs
+        "/api/topics",
+        "/api/prereqs",
+        # Observability
+        "/api/trace/{job_id}",
     ]
-    for path in expected:
-        assert path in spec["paths"], f"missing endpoint in OpenAPI: {path}"
+    missing = [p for p in expected if p not in spec["paths"]]
+    assert not missing, f"missing endpoints in OpenAPI: {missing}"
 
 
 def test_openapi_components_reference_resolve():
@@ -85,3 +111,64 @@ def test_openapi_direct_lesson_documents_target_minutes(client):
     assert tm["type"] == "number"
     assert tm["minimum"] == 0.5
     assert tm["maximum"] == 10.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Route-count coverage — fails when a new Flask endpoint ships without an
+# OpenAPI entry. Catches the kind of drift that made the schema lie about
+# what was supported.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# Routes intentionally NOT in the public schema (e.g. static file serving,
+# debug-only endpoints). Add a comment when expanding so the rationale is
+# tracked alongside the exclusion.
+_OPENAPI_ROUTE_EXCLUSIONS = {
+    "/media/<path:filename>",   # static file serving, not an API
+    "/openapi.json",            # the spec itself
+    "/topics",                  # duplicated by /api/topics (alias)
+}
+
+
+def _flask_route_paths() -> list[str]:
+    """Grep `backend/app.py` for `@app.<verb>("<path>")` decorators."""
+    import os as _os
+    import re as _re
+    path = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+        "app.py",
+    )
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    return _re.findall(
+        r"@app\.(?:get|post|put|delete|patch|route)\(\"([^\"]+)\"",
+        text,
+    )
+
+
+def _flask_to_openapi(path: str) -> str:
+    """Translate Flask path-syntax (<id>, <int:id>, <path:filename>) into
+    the OpenAPI {id} curly-brace form."""
+    import re as _re
+    return _re.sub(r"<(?:[^:>]+:)?([^>]+)>", r"{\1}", path)
+
+
+def test_openapi_path_count_matches_route_count(client):
+    """For every Flask route, either the spec documents it OR it appears in
+    the explicit _OPENAPI_ROUTE_EXCLUSIONS allowlist. Catches drift."""
+    res = client.get("/openapi.json")
+    spec_paths = set(res.get_json()["paths"].keys())
+
+    flask_paths = _flask_route_paths()
+    undocumented = []
+    for fp in flask_paths:
+        if fp in _OPENAPI_ROUTE_EXCLUSIONS:
+            continue
+        canonical = _flask_to_openapi(fp)
+        if canonical not in spec_paths:
+            undocumented.append(fp)
+    assert not undocumented, (
+        "These routes ship without an OpenAPI entry — add them to "
+        "openapi_spec.py or to _OPENAPI_ROUTE_EXCLUSIONS with a comment: "
+        f"{undocumented}"
+    )
