@@ -11,11 +11,17 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from renderer.job_store import JobDictProxy, build_default_store
+from renderer.queue import build_default_queue
 
 # Item #13 — `_jobs` is a dict-shaped façade over a JobStore. Default is
 # in-memory (zero behavior change). Set LUMEN_JOBS_DB to opt into SQLite
 # persistence so jobs survive a worker restart.
 _jobs = JobDictProxy(build_default_store())
+
+# Item #14 — dispatch background work through the pluggable JobQueue.
+# Default is InProcessQueue (ThreadPoolExecutor — same shape as the prior
+# direct threading.Thread calls). Set REDIS_URL to opt into RQ.
+_default_queue = build_default_queue()
 
 # ---------------------------------------------------------------------------
 # Quality settings
@@ -341,9 +347,10 @@ def submit_render(scene_type: str, params: dict) -> str:
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"status": "pending", "url": None, "error": None,
                      "progress": 0.0, "stage": "queued"}
-    threading.Thread(
-        target=_run_render, args=(job_id, scene_type, params), daemon=True,
-    ).start()
+    # Dispatch via the JobQueue. InProcess backend submits to a thread pool
+    # (replaces the prior daemon Thread). RQ backend pushes to Redis where an
+    # external `rq worker` picks it up.
+    _default_queue.enqueue(_run_render, job_id, scene_type, params)
     return job_id
 
 
@@ -495,9 +502,7 @@ def submit_lesson(steps: list) -> str:
     lesson_id = str(uuid.uuid4())
     _jobs[lesson_id] = {"status": "pending", "url": None, "error": None,
                         "progress": 0.0, "stage": "queued"}
-    threading.Thread(
-        target=_run_lesson, args=(lesson_id, steps), daemon=True,
-    ).start()
+    _default_queue.enqueue(_run_lesson, lesson_id, steps)
     return lesson_id
 
 
@@ -724,11 +729,8 @@ def submit_direct_lesson(question: str, style: str | None = None,
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"status": "pending", "url": None, "error": None,
                      "progress": 0.0, "stage": "planning_narrative"}
-    threading.Thread(
-        target=_run_direct_lesson,
-        args=(job_id, question, style, target_minutes, difficulty_hint),
-        daemon=True,
-    ).start()
+    _default_queue.enqueue(_run_direct_lesson, job_id, question, style,
+                            target_minutes, difficulty_hint)
     return job_id
 
 
