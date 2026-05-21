@@ -48,6 +48,19 @@ PTR_COLORS = {
 # Re-implemented here so primitives module is self-contained.
 # ---------------------------------------------------------------------------
 
+def _strip_dict_nulls(obj):
+    """Drop None values from dict keys recursively. Agents occasionally
+    emit explicit ``null`` in JSON params, which breaks downstream code
+    like ``int(p.get("n", 8))`` (the `.get` returns None, not the
+    default). Stripping at the boundary makes defaults work as written.
+    List elements keep their None entries so list shapes stay intact."""
+    if isinstance(obj, dict):
+        return {k: _strip_dict_nulls(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_strip_dict_nulls(v) for v in obj]
+    return obj
+
+
 def load_params() -> dict:
     job_id = os.environ.get("MANIM_JOB_ID")
     if job_id:
@@ -55,7 +68,7 @@ def load_params() -> dict:
         path = os.path.join(temp_dir, f"{job_id}.json")
         if os.path.exists(path):
             with open(path) as f:
-                return json.load(f)
+                return _strip_dict_nulls(json.load(f))
     return {}
 
 

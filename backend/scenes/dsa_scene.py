@@ -129,6 +129,23 @@ def _legacy_polish(title, scene_key: str, algorithm: str, custom_code: str = "")
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+def _strip_dict_nulls(obj):
+    """Recursively drop keys whose value is None from dicts.
+
+    Agents sometimes emit JSON like ``{"n": null, "amount": null}`` which
+    makes downstream ``int(p.get("n", 8))`` raise TypeError because
+    ``.get("n", 8)`` returns the explicit ``None`` instead of the default.
+    Stripping nulls at the boundary lets every scene's defaults work.
+    List elements keep their None entries — only dict KEYS are dropped,
+    so list shapes (e.g. coin arrays) stay intact.
+    """
+    if isinstance(obj, dict):
+        return {k: _strip_dict_nulls(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_strip_dict_nulls(v) for v in obj]
+    return obj
+
+
 def _load_params() -> dict:
     job_id = os.environ.get("MANIM_JOB_ID")
     if job_id:
@@ -136,7 +153,7 @@ def _load_params() -> dict:
         path = os.path.join(temp_dir, f"{job_id}.json")
         if os.path.exists(path):
             with open(path) as f:
-                return json.load(f)
+                return _strip_dict_nulls(json.load(f))
     return {}
 
 
@@ -1035,11 +1052,14 @@ class DPArrayScene(Scene):
     def construct(self):
         self.camera.background_color = "#0d1117"
         p = _load_params()
-        algorithm = p.get("algorithm", "fibonacci")
-        n         = int(p.get("n",     8))
+        algorithm = p.get("algorithm") or "fibonacci"
+        # Agents occasionally pass `n: null` / `amount: null` explicitly
+        # (instead of omitting the key), which makes p.get(...) return None
+        # and `int(None)` raise TypeError. Coerce defensively.
+        n         = int(p.get("n")      or 8)
         coins     = p.get("coins") or [1, 3, 4]
-        amount    = int(p.get("amount", 6))
-        cap       = p.get("caption",  "")
+        amount    = int(p.get("amount") or 6)
+        cap       = p.get("caption")    or ""
 
         if algorithm == "fibonacci":
             steps, dp = _dp_fibonacci_steps(n)

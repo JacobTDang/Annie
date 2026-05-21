@@ -10,6 +10,15 @@ from manim import *
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+def _strip_dict_nulls(obj):
+    """Drop None values from dict keys (recursively). See dsa_scene.py."""
+    if isinstance(obj, dict):
+        return {k: _strip_dict_nulls(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_strip_dict_nulls(v) for v in obj]
+    return obj
+
+
 def _load_params() -> dict:
     job_id = os.environ.get("MANIM_JOB_ID")
     if job_id:
@@ -17,7 +26,7 @@ def _load_params() -> dict:
         path = os.path.join(temp_dir, f"{job_id}.json")
         if os.path.exists(path):
             with open(path) as f:
-                return json.load(f)
+                return _strip_dict_nulls(json.load(f))
     return {}
 
 
