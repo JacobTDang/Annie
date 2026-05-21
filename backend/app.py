@@ -23,6 +23,7 @@ from renderer.worker import (
     get_job, submit_direct_lesson, submit_lesson, submit_render,
     pin_video, unpin_video,
 )
+from auth import current_user, is_enabled as auth_is_enabled
 from schemas.types import StepPlan
 
 _TOPICS = [
@@ -1026,8 +1027,7 @@ def create_app(testing: bool = False) -> Flask:
         if payload_size > 50_000:
             return jsonify({"error": "payload too large (max 50 kB)"}), 413
 
-        from auth import current_user as _current_user
-        viewer = _current_user(request)
+        viewer = current_user(request)
         is_public = bool(body.get("is_public", False))
         record = {
             "parsed": parsed,
@@ -1065,10 +1065,9 @@ def create_app(testing: bool = False) -> Flask:
         if record is None:
             return jsonify({"error": "share not found"}), 404
 
-        from auth import current_user as _current_user
         owner = isinstance(record, dict) and record.get("user_id")
         if owner and not (isinstance(record, dict) and record.get("is_public")):
-            viewer = _current_user(request)
+            viewer = current_user(request)
             viewer_id = viewer.get("sub") if viewer else None
             if viewer_id != owner:
                 return jsonify({"error": "share is private"}), 403
@@ -1083,10 +1082,9 @@ def create_app(testing: bool = False) -> Flask:
         Returns 401 when no token / unverifiable token / auth disabled.
         Response: { "shares": [{code, title, scene, is_public, created_at}, ...] }
         """
-        from auth import current_user as _current_user, is_enabled as _auth_enabled
-        if not _auth_enabled():
+        if not auth_is_enabled():
             return jsonify({"error": "auth not configured"}), 401
-        viewer = _current_user(request)
+        viewer = current_user(request)
         if not viewer or not viewer.get("sub"):
             return jsonify({"error": "authentication required"}), 401
         owner_id = viewer["sub"]
@@ -1300,8 +1298,7 @@ def create_app(testing: bool = False) -> Flask:
         job_id = (body.get("jobId") or "").strip()
         if not job_id:
             return jsonify({"error": "jobId required"}), 400
-        from auth import current_user as _current_user
-        viewer = _current_user(request)
+        viewer = current_user(request)
         user_id = viewer.get("sub") if viewer else None
         try:
             url = pin_video(job_id, user_id=user_id)
@@ -1315,8 +1312,7 @@ def create_app(testing: bool = False) -> Flask:
     @app.delete("/api/pin/<job_id>")
     def api_unpin(job_id: str):
         """Remove pin protection. Idempotent."""
-        from auth import current_user as _current_user
-        viewer = _current_user(request)
+        viewer = current_user(request)
         user_id = viewer.get("sub") if viewer else None
         unpin_video(job_id, user_id=user_id)
         return jsonify({"ok": True}), 200
@@ -1332,8 +1328,7 @@ def create_app(testing: bool = False) -> Flask:
                     "question_index": 0 }
         Response: { "stored": true|false } | 204 (anonymous)
         """
-        from auth import current_user as _current_user, is_enabled as _auth_enabled
-        viewer = _current_user(request)
+        viewer = current_user(request)
         if not (viewer and viewer.get("sub")):
             # No persistent backend store for anonymous traffic — the
             # frontend handles localStorage on its own.
