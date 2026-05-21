@@ -101,13 +101,20 @@ export const CollabPage: React.FC = () => {
   const _maybeBind = async () => {
     if (!editorRef.current || !session) return;
     if (bindingRef.current) return;
+    // Capture the session reference at call time. If `session` changes
+    // while we await the dynamic import (user switches rooms mid-load),
+    // the resolved binding would otherwise wire Monaco to the OLD doc.
+    // Post-review fix.
+    const capturedSession = session;
     const { MonacoBinding } = await import("y-monaco");
-    const yText = session.doc.getText("monaco");
+    if (capturedSession !== session) return;     // session swapped — abort
+    if (bindingRef.current) return;              // re-check after the await
+    const yText = capturedSession.doc.getText("monaco");
     bindingRef.current = new MonacoBinding(
       yText,
       editorRef.current.getModel()!,
       new Set([editorRef.current]),
-      session.provider.awareness,
+      capturedSession.provider.awareness,
     );
   };
 
