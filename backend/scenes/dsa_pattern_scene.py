@@ -21,6 +21,7 @@ from scenes.dsa_primitives import (
     GridPanel, GridArrow, BinaryTreePanel, RecursionTree, IntervalBars,
     DoublyLinkedListPanel, GraphPanel, CodePanel,
     ComplexityBadge, InvariantOverlay, BruteForceComparison, BinaryRegister,
+    ChapterRecorder,
     load_params, show_title_card, caption_strip, result_box, action_text,
 )
 
@@ -4937,7 +4938,7 @@ class TrappingRainWaterScene(Scene):
 # DP family — 2D table scenes (Phase 2 of DP interview-prep batch)
 # ---------------------------------------------------------------------------
 
-class Knapsack01Scene(Scene):
+class Knapsack01Scene(Scene, ChapterRecorder):
     """0/1 Knapsack: dp[i][w] = max value using first i items, capacity w.
 
     Animates the (N+1) × (W+1) table row by row. For each cell, highlights
@@ -4950,6 +4951,12 @@ class Knapsack01Scene(Scene):
     """
 
     def construct(self):
+        try:
+            self._construct_impl()
+        finally:
+            self.flush_chapters()
+
+    def _construct_impl(self):
         params = load_params()
         items = params.get("items", [{"weight": 2, "value": 3},
                                        {"weight": 3, "value": 4},
@@ -5008,6 +5015,7 @@ class Knapsack01Scene(Scene):
                 self.play(grid.anim_set_value(i, w, str(dp[i][w])),
                           grid.anim_set_fill(i, w, DEFAULT_CELL, 0.7),
                           run_time=0.10)
+                self.mark_chapter(f"dp[{i}][{w}] = {dp[i][w]}")
 
         for old in arrows:
             self.remove(old)
@@ -5051,11 +5059,13 @@ def _fill_2d_dp(scene, grid, dp, *, predecessor_fn, color="GREEN",
             scene.play(grid.anim_set_value(i, j, str(dp[i][j])),
                        grid.anim_set_fill(i, j, DEFAULT_CELL, 0.7),
                        run_time=run_time)
+            if hasattr(scene, "mark_chapter"):
+                scene.mark_chapter(f"dp[{i}][{j}] = {dp[i][j]}")
     for old in arrows:
         scene.remove(old)
 
 
-class LCSScene(Scene):
+class LCSScene(Scene, ChapterRecorder):
     """Longest Common Subsequence: dp[i][j] = LCS length of s1[:i], s2[:j].
 
     Renders the (|s1|+1) × (|s2|+1) table with diagonal-match / max-of-
@@ -5063,6 +5073,12 @@ class LCSScene(Scene):
     """
 
     def construct(self):
+        try:
+            self._construct_impl()
+        finally:
+            self.flush_chapters()
+
+    def _construct_impl(self):
         params = load_params()
         s1 = str(params.get("s1", "AGC"))[:8]
         s2 = str(params.get("s2", "GAC"))[:8]
@@ -5106,11 +5122,17 @@ class LCSScene(Scene):
         self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=0.5)
 
 
-class EditDistanceScene(Scene):
+class EditDistanceScene(Scene, ChapterRecorder):
     """Edit Distance (Levenshtein): dp[i][j] = min ops to transform
     s1[:i] → s2[:j]. Each cell picks min of insert/delete/replace."""
 
     def construct(self):
+        try:
+            self._construct_impl()
+        finally:
+            self.flush_chapters()
+
+    def _construct_impl(self):
         params = load_params()
         s1 = str(params.get("s1", "cat"))[:6]
         s2 = str(params.get("s2", "bat"))[:6]
@@ -5154,11 +5176,17 @@ class EditDistanceScene(Scene):
         self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=0.5)
 
 
-class CoinChange2DScene(Scene):
+class CoinChange2DScene(Scene, ChapterRecorder):
     """Coin Change (number of ways): dp[i][w] = number of ways to make
     amount w using the first i coins."""
 
     def construct(self):
+        try:
+            self._construct_impl()
+        finally:
+            self.flush_chapters()
+
+    def _construct_impl(self):
         params = load_params()
         coins = list(params.get("coins", [1, 2, 5]))[:4]
         amount = int(params.get("amount", 5))
@@ -5201,12 +5229,18 @@ class CoinChange2DScene(Scene):
         self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=0.5)
 
 
-class LISScene(Scene):
+class LISScene(Scene, ChapterRecorder):
     """Longest Increasing Subsequence (O(n²) DP).
     dp[i] = longest IS ending at index i. For each i, iterate j < i,
     arrow from j → i if nums[j] < nums[i] and dp[j]+1 > dp[i]."""
 
     def construct(self):
+        try:
+            self._construct_impl()
+        finally:
+            self.flush_chapters()
+
+    def _construct_impl(self):
         params = load_params()
         nums = list(params.get("nums", [3, 1, 4, 1, 5, 9, 2, 6]))[:8]
 
@@ -5247,6 +5281,7 @@ class LISScene(Scene):
             self.play(grid.anim_set_value(1, i, str(dp[i])),
                       grid.anim_set_fill(1, i, DEFAULT_CELL, 0.7),
                       run_time=0.10)
+            self.mark_chapter(f"dp[{i}] = {dp[i]} (nums[{i}]={nums[i]})")
         for old in arrows:
             self.remove(old)
 
@@ -5257,7 +5292,7 @@ class LISScene(Scene):
         self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=0.5)
 
 
-class DPProgressionScene(Scene):
+class DPProgressionScene(Scene, ChapterRecorder):
     """Recursion → memoization → tabulation triptych.
 
     Shows the same problem (default: fibonacci(n)) in three regions:
@@ -5270,6 +5305,12 @@ class DPProgressionScene(Scene):
     """
 
     def construct(self):
+        try:
+            self._construct_impl()
+        finally:
+            self.flush_chapters()
+
+    def _construct_impl(self):
         params = load_params()
         problem = str(params.get("problem", "fibonacci"))
         n = int(params.get("n", 5))
@@ -5281,6 +5322,7 @@ class DPProgressionScene(Scene):
         tree_title = Text("1. Naïve recursion", font_size=20, color=YELLOW)
         tree_title.to_edge(UP, buff=0.8)
         self.play(FadeIn(tree_title), run_time=0.3)
+        self.mark_chapter("1. Naïve recursion (exponential time)")
 
         dup_text = Text(f"fib({n-1}) and fib({n-2}) recompute fib({n-3}) twice",
                           font_size=16, color=GRAY)
@@ -5302,6 +5344,7 @@ class DPProgressionScene(Scene):
                        ["·"] + ["—"] * (n + 1)]
         memo_grid = GridPanel(memo_values, cell_size=0.6, with_indices=False)
         self.play(FadeIn(memo_title), FadeIn(memo_grid.vgroup), run_time=0.4)
+        self.mark_chapter("2. Memoized recursion (O(n) time)")
 
         memo_table = {0: 0, 1: 1}
         # Visually seed dp[0] = 0, dp[1] = 1
@@ -5332,6 +5375,7 @@ class DPProgressionScene(Scene):
                       ["·"] + ["—"] * (n + 1)]
         tab_grid = GridPanel(tab_values, cell_size=0.6, with_indices=False)
         self.play(FadeIn(tab_title), FadeIn(tab_grid.vgroup), run_time=0.4)
+        self.mark_chapter("3. Bottom-up tabulation")
 
         tab = [0] * (n + 1)
         tab[0], tab[1] = 0, 1

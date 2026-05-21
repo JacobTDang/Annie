@@ -29,6 +29,8 @@ import {
   pinVideo,
   useLiveProgress,
   useLiveStage,
+  fetchChapters,
+  type Chapter,
 } from "../lib/api";
 import { StageTimeline } from "../components/StageTimeline";
 import { saveVideoToLibrary } from "../lib/savedVideos";
@@ -262,6 +264,12 @@ const PasteProblemPage: React.FC<PasteProblemPageProps> = ({
   // Video playback control: speed + replay + scrub-by-chapter for lessons
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [playbackRate, setPlaybackRate] = useState(1);
+
+  // Phase 4 — semantic step controls. DP scenes write a chapter sidecar
+  // listing (time, label) for each cell-fill etc. Empty array for
+  // non-DP scenes (no sidecar fetched).
+  const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [currentChapterIdx, setCurrentChapterIdx] = useState(-1);
 
   // Live stage + progress from the backend, keyed by the topicId stashed
   // in the rendering state. Refresh on every backend poll tick.
@@ -497,6 +505,68 @@ const PasteProblemPage: React.FC<PasteProblemPageProps> = ({
   useEffect(() => {
     if (state.kind === "ready") setSaveStatus("idle");
   }, [state.kind === "ready" ? state.videoUrl : null]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Phase 4 — fetch the chapter sidecar (DP scenes only) when video is ready.
+  useEffect(() => {
+    if (state.kind !== "ready") {
+      setChapters([]);
+      setCurrentChapterIdx(-1);
+      return;
+    }
+    let cancelled = false;
+    fetchChapters(state.videoUrl).then((ch) => {
+      if (!cancelled) {
+        setChapters(ch);
+        setCurrentChapterIdx(-1);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [state.kind === "ready" ? state.videoUrl : null]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Track which chapter the playhead is in so the step counter stays live
+  // during normal playback (not just on manual stepping).
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || chapters.length === 0) return;
+    const onTime = () => {
+      const t = video.currentTime;
+      let idx = -1;
+      for (let i = 0; i < chapters.length; i++) {
+        if (chapters[i].t <= t) idx = i;
+        else break;
+      }
+      setCurrentChapterIdx(idx);
+    };
+    video.addEventListener("timeupdate", onTime);
+    return () => { video.removeEventListener("timeupdate", onTime); };
+  }, [chapters]);
+
+  const seekToChapter = useCallback((idx: number) => {
+    if (!videoRef.current || idx < 0 || idx >= chapters.length) return;
+    videoRef.current.currentTime = chapters[idx].t;
+    setCurrentChapterIdx(idx);
+  }, [chapters]);
+
+  const stepPrev = useCallback(() => {
+    if (!videoRef.current || chapters.length === 0) return;
+    const t = videoRef.current.currentTime;
+    // Find the largest chapter strictly before now; allow tiny slack so
+    // "Prev" while exactly on a chapter goes to the previous one.
+    let target = -1;
+    for (let i = 0; i < chapters.length; i++) {
+      if (chapters[i].t < t - 0.05) target = i;
+      else break;
+    }
+    if (target >= 0) seekToChapter(target);
+  }, [chapters, seekToChapter]);
+
+  const stepNext = useCallback(() => {
+    if (!videoRef.current || chapters.length === 0) return;
+    const t = videoRef.current.currentTime;
+    for (let i = 0; i < chapters.length; i++) {
+      if (chapters[i].t > t + 0.05) { seekToChapter(i); return; }
+    }
+  }, [chapters, seekToChapter]);
 
   const handleStartQuiz = useCallback(async () => {
     if (state.kind !== "ready") return;
@@ -1278,6 +1348,56 @@ const PasteProblemPage: React.FC<PasteProblemPageProps> = ({
                   >
                     ↺ Replay
                   </button>
+
+                  {/* Phase 4 — semantic step controls (DP scenes only).
+                      Hidden when no chapters sidecar exists. */}
+                  {chapters.length > 0 && (
+                    <div className="flex items-center gap-1" style={{ marginLeft: 8 }}>
+                      <span style={{ fontSize: 11, color: C.textFaint }}>Step:</span>
+                      <button
+                        onClick={stepPrev}
+                        aria-label="Previous step"
+                        className="px-2 py-1 rounded"
+                        style={{
+                          fontSize: 11,
+                          color: C.textMuted,
+                          background: "transparent",
+                          border: `1px solid ${C.borderAlt}`,
+                          cursor: "pointer",
+                        }}
+                      >
+                        ← Prev
+                      </button>
+                      <span
+                        title={currentChapterIdx >= 0
+                          ? chapters[currentChapterIdx]?.label
+                          : "before first step"}
+                        style={{
+                          fontSize: 11,
+                          color: C.textMuted,
+                          padding: "0 6px",
+                          fontFamily: "ui-monospace, SFMono-Regular, monospace",
+                        }}
+                      >
+                        {currentChapterIdx >= 0 ? currentChapterIdx + 1 : 0}
+                        {" / "}{chapters.length}
+                      </span>
+                      <button
+                        onClick={stepNext}
+                        aria-label="Next step"
+                        className="px-2 py-1 rounded"
+                        style={{
+                          fontSize: 11,
+                          color: C.textMuted,
+                          background: "transparent",
+                          border: `1px solid ${C.borderAlt}`,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Next →
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 

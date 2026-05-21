@@ -228,6 +228,38 @@ export async function parseFollowUp(
 }
 
 // ─────────────────────────────────────────────────────────────
+// Chapter markers — DP scenes write a `.chapters.json` sidecar next to
+// the MP4 listing semantic step times. Used by the step controls in
+// PasteProblemPage. Empty array for non-DP scenes (no sidecar exists).
+// ─────────────────────────────────────────────────────────────
+
+export interface Chapter {
+  t: number;
+  label: string;
+}
+
+export async function fetchChapters(videoUrl: string | null | undefined): Promise<Chapter[]> {
+  if (!videoUrl || !videoUrl.endsWith(".mp4")) return [];
+  const sidecarPath = videoUrl.slice(0, -4) + ".chapters.json";
+  // The URL may already be absolute (S3 backend) or relative (/media/...).
+  // Build the full URL the same way the video <src> is computed.
+  const url = sidecarPath.startsWith("http")
+    ? sidecarPath
+    : `${flaskBase()}${sidecarPath}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!Array.isArray(data)) return [];
+    return data.filter((c: any) =>
+      typeof c?.t === "number" && typeof c?.label === "string",
+    ) as Chapter[];
+  } catch {
+    return [];
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // Video pinning — protect a rendered video from server-side cleanup
 // when the user saves it to their library.
 // ─────────────────────────────────────────────────────────────

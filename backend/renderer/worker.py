@@ -577,6 +577,10 @@ def _run_render(job_id: str, scene_type: str, params: dict):
         # Manim writes occasional info to stdout; if we capture it via PIPE
         # but never drain it, the OS pipe buffer fills (~64KB) and manim
         # blocks on its next print, deadlocking the entire render.
+        # DP scenes (Phase 4) write a chapter sidecar listing semantic
+        # markers as they animate — one entry per cell fill etc. Tell the
+        # scene where to write it; we move it next to the MP4 below.
+        chapters_tmp = os.path.join(_TEMP_DIR, f"{job_id}.chapters.json")
         proc = subprocess.Popen(
             [sys.executable, "-u", "-m", "manim", quality_flag,
              "--media_dir", job_media_dir,
@@ -584,7 +588,10 @@ def _run_render(job_id: str, scene_type: str, params: dict):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True, bufsize=1, cwd=_BACKEND_DIR,
-            env={**os.environ, "MANIM_JOB_ID": job_id, "MANIM_TEMP_DIR": _TEMP_DIR},
+            env={**os.environ,
+                 "MANIM_JOB_ID": job_id,
+                 "MANIM_TEMP_DIR": _TEMP_DIR,
+                 "LUMEN_CHAPTERS_OUT": chapters_tmp},
         )
 
         err_capture: list = []
@@ -624,6 +631,18 @@ def _run_render(job_id: str, scene_type: str, params: dict):
                              "progress": _jobs[job_id].get("progress", 0.0),
                              "stage": "error"}
             return
+
+        # Move the chapter sidecar (if any) alongside the MP4 with the
+        # same basename. The frontend fetches <video>.chapters.json to
+        # render semantic step controls (Phase 4).
+        if os.path.exists(chapters_tmp):
+            sidecar_path = full_path.removesuffix(".mp4") + ".chapters.json"
+            try:
+                shutil.move(chapters_tmp, sidecar_path)
+            except OSError as exc:
+                print(f"[worker] chapter sidecar move failed: {exc}")
+                try: os.remove(chapters_tmp)
+                except OSError: pass
 
         _jobs[job_id] = {"status": "done", "url": f"/media/{video_rel}",
                          "error": None, "progress": 1.0, "stage": "done"}

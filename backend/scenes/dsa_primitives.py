@@ -59,6 +59,51 @@ def load_params() -> dict:
     return {}
 
 
+# ---------------------------------------------------------------------------
+# Chapter recorder — semantic step markers for the video player
+# ---------------------------------------------------------------------------
+
+class ChapterRecorder:
+    """Records (time_s, label) markers as a scene animates.
+
+    DSA scene classes mix this in and call ``self.mark_chapter("…")`` at
+    semantic boundaries — e.g. each DP cell fill. After ``construct()``
+    finishes, ``flush_chapters()`` writes the list to the path in the
+    ``LUMEN_CHAPTERS_OUT`` env var (set by the worker per render).
+
+    Missing env var, write failures, or import errors all degrade
+    silently — the underlying scene still completes normally.
+    """
+
+    def mark_chapter(self, label: str) -> None:
+        if not hasattr(self, "_chapters"):
+            self._chapters: list = []
+        # Manim exposes the scene clock at self.renderer.time. Default to
+        # 0.0 if the renderer isn't attached yet (very early calls).
+        renderer = getattr(self, "renderer", None)
+        t = getattr(renderer, "time", 0.0) if renderer else 0.0
+        try:
+            t = float(t)
+        except (TypeError, ValueError):
+            t = 0.0
+        self._chapters.append({"t": t, "label": str(label)})
+
+    def flush_chapters(self) -> None:
+        out = os.environ.get("LUMEN_CHAPTERS_OUT")
+        if not out:
+            return
+        chapters = getattr(self, "_chapters", None)
+        if not chapters:
+            return
+        try:
+            os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+            with open(out, "w", encoding="utf-8") as fh:
+                json.dump(chapters, fh)
+        except OSError:
+            # Never break the render over a chapter-write failure
+            pass
+
+
 def show_title_card(scene, text: str):
     import textwrap as _tw
     wrapped = _tw.fill(text, width=52)
