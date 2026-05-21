@@ -41,6 +41,7 @@ import {
   Globe,
   Network,
   Users,
+  Brain,
 } from "lucide-react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthMenu } from "./components/AuthMenu";
@@ -60,7 +61,7 @@ import {
 // Types
 // ─────────────────────────────────────────────────────────────
 
-type Route = "home" | "notes" | "animations" | "library" | "playlists" | "public" | "prereqs" | "collab" | "import-notes" | "import-animations";
+type Route = "home" | "notes" | "animations" | "library" | "playlists" | "public" | "prereqs" | "collab" | "dp-practice" | "import-notes" | "import-animations";
 
 interface SideNote {
   id: string;
@@ -1591,6 +1592,7 @@ const Sidebar: React.FC<{
     { key: "public", label: "Public", icon: <Globe size={16} strokeWidth={1.5} /> },
     { key: "prereqs", label: "Prereqs", icon: <Network size={16} strokeWidth={1.5} /> },
     { key: "collab", label: "Collab", icon: <Users size={16} strokeWidth={1.5} /> },
+    { key: "dp-practice", label: "DP Practice", icon: <Brain size={16} strokeWidth={1.5} /> },
     { key: "import-notes", label: "Import notes", icon: <FileImage size={16} strokeWidth={1.5} /> },
     { key: "import-animations", label: "Import problem", icon: <Upload size={16} strokeWidth={1.5} /> },
   ];
@@ -4010,6 +4012,7 @@ const PlaylistsPage = lazy(() => import('./pages/PlaylistsPage').then(m => ({ de
 const PublicLibraryPage = lazy(() => import('./pages/PublicLibraryPage').then(m => ({ default: m.PublicLibraryPage })));
 const PrereqGraphPage = lazy(() => import('./pages/PrereqGraphPage').then(m => ({ default: m.PrereqGraphPage })));
 const CollabPage = lazy(() => import('./pages/CollabPage').then(m => ({ default: m.CollabPage })));
+const DPPracticePage = lazy(() => import('./pages/DPPracticePage').then(m => ({ default: m.DPPracticePage })));
 const EmbedPage = lazy(() => import('./pages/EmbedPage'));
 
 // ─────────────────────────────────────────────────────────────
@@ -4239,6 +4242,15 @@ export default function App() {
                 </div>
               }>
                 <CollabPage />
+              </Suspense>
+            )}
+            {route === "dp-practice" && (
+              <Suspense fallback={
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", background: "#1A1A1A" }}>
+                  <Loader2 size={24} className="animate-spin" color="#A0A0A0" strokeWidth={1.5} />
+                </div>
+              }>
+                <DPPracticePage />
               </Suspense>
             )}
             {route === "import-notes" && (
