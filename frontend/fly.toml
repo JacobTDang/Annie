@@ -15,6 +15,15 @@ primary_region = "iad"
   dockerfile = "frontend/Dockerfile"
 
 [env]
+  # nginx proxies /api/, /media/, etc. to the backend at this host. The
+  # default assumes the backend app was launched as `lumen-api`; if you
+  # renamed it during `fly launch`, override at deploy time so traffic
+  # actually routes there:
+  #
+  #   fly secrets set BACKEND_HOST=<your-backend-app>.internal \
+  #     --config frontend/fly.toml --app <your-frontend-app>
+  #
+  # Locally docker-compose sets BACKEND_HOST=backend (the compose service name).
   BACKEND_HOST = "lumen-api.internal"
   BACKEND_PORT = "5000"
 

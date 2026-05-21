@@ -182,3 +182,17 @@ def test_readme_documents_fly_deploy():
     assert "Fly.io" in text or "fly.io" in text.lower()
     assert "fly deploy" in text.lower()
     assert "lumen_media" in text or "lumen-media" in text.lower()
+
+
+def test_frontend_fly_toml_documents_backend_host_override():
+    """Post-review fix: the BACKEND_HOST default assumes a specific backend
+    app name. If the operator renames it, traffic silently breaks. Both the
+    fly.toml and the README must call out the override syntax."""
+    fly_text = _read(_FRONTEND_FLY)
+    # Override instructions live inline as a comment
+    assert "fly secrets set BACKEND_HOST" in fly_text, (
+        "frontend/fly.toml must document the override path inline"
+    )
+    readme = _read(_README)
+    assert "BACKEND_HOST" in readme
+    assert "renamed" in readme.lower() or "override" in readme.lower()

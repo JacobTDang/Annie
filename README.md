@@ -182,5 +182,13 @@ The frontend's nginx config templates `${BACKEND_HOST}` at boot, so it talks
 to `lumen-api.internal` on Fly and to the docker-compose `backend` service
 locally — same image, no rebuild.
 
+If you renamed the backend app (e.g. `fly launch --name lumen-prod`),
+override the host on the frontend so the proxy points at the right place:
+
+```bash
+fly secrets set BACKEND_HOST=lumen-prod.internal \
+  --config frontend/fly.toml --app lumen-web
+```
+
 Manual redeploys from GitHub: Actions → "deploy" workflow → Run workflow
 (needs `FLY_API_TOKEN` as a repository secret).
