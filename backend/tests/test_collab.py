@@ -18,13 +18,9 @@ def _reset_rooms(tmp_path, monkeypatch):
     monkeypatch.setattr(collab, "_collab_dir", str(tmp_path / "collab"))
     with collab._ROOMS_LOCK:
         collab._rooms.clear()
-        collab._docs.clear()
-        collab._dirty.clear()
     yield
     with collab._ROOMS_LOCK:
         collab._rooms.clear()
-        collab._docs.clear()
-        collab._dirty.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -234,146 +230,98 @@ def test_varuint_payload_roundtrip():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Persistence — snapshot ↔ load round-trip via y-py
+# Persistence — append-only update log
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _have_y_py() -> bool:
-    try:
-        import y_py  # noqa: F401
-        return True
-    except ImportError:
-        return False
+def _decode_frames(buf: bytes) -> list[tuple[int, int, bytes]]:
+    """Decode a concatenated stream of `[type][sub][len][payload]` frames.
+    Returns a list of (msg_type, sub_type, payload)."""
+    out: list[tuple[int, int, bytes]] = []
+    i = 0
+    while i < len(buf):
+        msg_type = buf[i]
+        sub_type, i = collab._read_varuint(buf, i + 1)
+        payload, i = collab._read_varuint_payload(buf, i)
+        out.append((msg_type, sub_type, payload))
+    return out
 
 
-@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
-def test_snapshot_then_load_round_trip():
-    import y_py
-    doc = y_py.YDoc()
-    text = doc.get_text("monaco")
-    with doc.begin_transaction() as txn:
-        text.extend(txn, "hello world")
-    encoded = y_py.encode_state_as_update(doc)
-
-    collab.snapshot_room("persist-1", encoded)
-    loaded = collab.load_room("persist-1")
-    assert loaded == encoded
-
-    # Reload into a fresh doc and confirm content survived
-    doc2 = y_py.YDoc()
-    y_py.apply_update(doc2, loaded)
-    assert str(doc2.get_text("monaco")) == "hello world"
+def test_append_update_then_replay_roundtrips_in_order():
+    """The persistence promise: write updates, read them back in the
+    exact same order with byte-identical content."""
+    updates = [b"first-update", b"second", b"\x00\x01\x02 binary"]
+    for u in updates:
+        assert collab.append_update("rt", u) is True
+    got = list(collab.replay_updates("rt"))
+    assert got == updates
 
 
-def test_load_missing_room_returns_none():
-    assert collab.load_room("never-existed") is None
+def test_replay_missing_room_yields_nothing():
+    assert list(collab.replay_updates("never-existed")) == []
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Server-side Y.Doc lifecycle
-# ─────────────────────────────────────────────────────────────────────────────
+def test_append_update_empty_returns_false():
+    """Empty payloads are rejected so a zero-length frame can't poison
+    the log."""
+    assert collab.append_update("empty", b"") is False
+    assert list(collab.replay_updates("empty")) == []
 
 
-@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
-def test_get_or_create_doc_loads_from_snapshot():
-    import y_py
-    # Pre-seed a snapshot on disk
-    doc = y_py.YDoc()
-    with doc.begin_transaction() as txn:
-        doc.get_text("monaco").extend(txn, "preexisting")
-    collab.snapshot_room("with-snapshot", y_py.encode_state_as_update(doc))
+def test_concurrent_appends_dont_corrupt_log():
+    """Post-y-py regression: previously the server kept a `_docs[room_id]`
+    YDoc that was `unsendable` across threads, so multi-client collab
+    panicked. Now the persistence layer is an O_APPEND log — the kernel
+    serializes appends. Hammer with 8 threads × 50 writes, assert all
+    400 entries decode cleanly + appear in the log."""
+    n_threads = 8
+    per_thread = 50
+    barrier = threading.Barrier(n_threads)
 
-    # First _get_or_create_doc call should load the snapshot
-    server_doc = collab._get_or_create_doc("with-snapshot")
-    assert server_doc is not None
-    assert str(server_doc.get_text("monaco")) == "preexisting"
+    def hammer(tid: int):
+        barrier.wait()
+        for i in range(per_thread):
+            # Unique payload per (thread, index) so we can detect lost or
+            # corrupted writes.
+            payload = f"t{tid:02d}-i{i:03d}".encode()
+            collab.append_update("hammer", payload)
 
+    threads = [threading.Thread(target=hammer, args=(t,))
+               for t in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
-@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
-def test_room_empties_trigger_final_persist(tmp_path, monkeypatch):
-    """When the last peer leaves, the server's Y.Doc must be flushed so
-    next-time joiners get the latest state."""
-    import y_py
-    sock = MagicMock()
-    collab._add_socket("empty-flush", sock)
-    # Manually populate the server doc + mark dirty
-    doc = collab._get_or_create_doc("empty-flush")
-    with doc.begin_transaction() as txn:
-        doc.get_text("monaco").extend(txn, "just before disconnect")
-    collab._dirty.add("empty-flush")
-
-    collab._remove_socket("empty-flush", sock)
-    # Snapshot should exist on disk now
-    blob = collab.load_room("empty-flush")
-    assert blob is not None
-    # Round-trip to verify content
-    doc2 = y_py.YDoc()
-    y_py.apply_update(doc2, blob)
-    assert str(doc2.get_text("monaco")) == "just before disconnect"
-
-
-def test_reconnect_during_persist_keeps_doc(monkeypatch):
-    """Post-review regression: when the last socket leaves, _remove_socket
-    releases _ROOMS_LOCK to do disk I/O. If a new peer connects during that
-    window, the cleanup must NOT evict the doc out from under them.
-
-    The test stubs _maybe_persist with a slow-noop instead of calling
-    real persist — the real y_py.encode_state_as_update would touch the
-    YDoc from a non-owning thread (YDoc is `unsendable`), tripping a
-    PyO3 panic that's unrelated to the eviction-race contract under test.
-    """
-    persist_started = threading.Event()
-    persist_can_finish = threading.Event()
-
-    def slow_persist(room_id, force=False):
-        persist_started.set()
-        persist_can_finish.wait(timeout=2.0)
-    monkeypatch.setattr(collab, "_maybe_persist", slow_persist)
-
-    # Seed a sentinel "doc" so we can detect identity changes without touching y_py
-    sentinel_doc = object()
-    sock_a = MagicMock()
-    collab._add_socket("race-room", sock_a)
-    with collab._ROOMS_LOCK:
-        collab._docs["race-room"] = sentinel_doc
-
-    # Thread 1: remove the last socket → enters persist (which blocks)
-    def remover():
-        collab._remove_socket("race-room", sock_a)
-    rm_thread = threading.Thread(target=remover)
-    rm_thread.start()
-
-    # Wait until the persist has started + the room has been popped
-    assert persist_started.wait(timeout=2.0)
-    # Sanity: the room is gone from _rooms but the doc is still in _docs
-    with collab._ROOMS_LOCK:
-        assert "race-room" not in collab._rooms
-        assert "race-room" in collab._docs
-
-    # Thread 2: new peer joins the same room during the persist
-    sock_b = MagicMock()
-    collab._add_socket("race-room", sock_b)
-
-    # Release the persist + let the cleanup run
-    persist_can_finish.set()
-    rm_thread.join(timeout=2.0)
-
-    # The doc should still be present (room re-occupied so cleanup bailed)
-    with collab._ROOMS_LOCK:
-        assert "race-room" in collab._docs, "cleanup evicted doc despite rejoin"
-        assert collab._docs["race-room"] is sentinel_doc
+    got = list(collab.replay_updates("hammer"))
+    assert len(got) == n_threads * per_thread, (
+        f"lost writes: got {len(got)} of {n_threads * per_thread}"
+    )
+    # Every entry decodes cleanly (the assertion above already implies
+    # this — if any frame was truncated, replay would have stopped early)
+    # and matches the expected payload format.
+    for entry in got:
+        s = entry.decode()
+        assert s.startswith("t") and "-i" in s
 
 
-@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
-def test_room_empties_drops_doc_from_memory():
-    """After the last peer leaves, the in-memory Y.Doc must be released
-    so room memory doesn't grow unbounded."""
-    sock = MagicMock()
-    collab._add_socket("evict-me", sock)
-    collab._get_or_create_doc("evict-me")
-    assert "evict-me" in collab._docs
-    collab._remove_socket("evict-me", sock)
-    assert "evict-me" not in collab._docs
+def test_snapshot_room_backcompat_replaces_log():
+    """The legacy snapshot_room API still works — it overwrites the log
+    with a single framed entry. Used by external callers that don't
+    track the multi-update model."""
+    collab.snapshot_room("snap", b"single-blob")
+    assert list(collab.replay_updates("snap")) == [b"single-blob"]
+    # Calling again replaces (not appends)
+    collab.snapshot_room("snap", b"replacement")
+    assert list(collab.replay_updates("snap")) == [b"replacement"]
+
+
+def test_load_room_backcompat_returns_first_entry():
+    """The legacy load_room API returns just the first entry."""
+    assert collab.load_room("missing") is None
+    collab.append_update("multi", b"alpha")
+    collab.append_update("multi", b"beta")
+    assert collab.load_room("multi") == b"alpha"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -381,46 +329,65 @@ def test_room_empties_drops_doc_from_memory():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
-def test_sync_step_1_yields_sync_step_2():
-    """When a client sends Sync Step 1 (state vector), the server must
-    reply with Sync Step 2 (the diff). Sub-type byte 1 follows the type."""
-    import y_py
-    # Seed the server doc with some content so there's a diff to send
-    doc = collab._get_or_create_doc("sync-test")
-    with doc.begin_transaction() as txn:
-        doc.get_text("monaco").extend(txn, "server-state")
-
-    # Build a Sync Step 1 with an EMPTY state vector (client knows nothing)
-    empty_state_vector = y_py.encode_state_vector(y_py.YDoc())
-    msg = bytes([collab.MSG_SYNC, collab.SYNC_STEP_1]) \
-          + collab._write_varuint_payload(empty_state_vector)
-
-    reply = collab._handle_sync_message("sync-test", msg)
-    assert reply is not None
-    assert reply[0] == collab.MSG_SYNC
-    # Sub-type follows; varuint-encoded but for small values it's just the byte
-    sub_type, _ = collab._read_varuint(reply, 1)
-    assert sub_type == collab.SYNC_STEP_2
-
-
-@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
-def test_sync_update_applies_to_server_doc():
-    """Sync Update messages must be folded into the server's Y.Doc so it
-    stays canonical."""
-    import y_py
-    # Simulate a client-side doc with content, then encode its update
-    client_doc = y_py.YDoc()
-    with client_doc.begin_transaction() as txn:
-        client_doc.get_text("monaco").extend(txn, "from-client")
-    update_bytes = y_py.encode_state_as_update(client_doc)
-
+def test_sync_update_message_appends_to_log_and_no_reply():
+    """SYNC_UPDATE: payload goes into the log, no reply to the sender
+    (the broadcast layer handles fan-out separately)."""
+    update_payload = b"client-update-bytes"
     msg = bytes([collab.MSG_SYNC, collab.SYNC_UPDATE]) \
-          + collab._write_varuint_payload(update_bytes)
-    collab._handle_sync_message("update-test", msg)
+          + collab._write_varuint_payload(update_payload)
 
-    server_doc = collab._docs["update-test"]
-    assert str(server_doc.get_text("monaco")) == "from-client"
+    reply = collab._handle_sync_message("upd", msg)
+    assert reply is None
+
+    logged = list(collab.replay_updates("upd"))
+    assert logged == [update_payload]
+
+
+def test_sync_step_2_message_appends_to_log_and_no_reply():
+    """SYNC_STEP_2 (a client's incremental reply to our hypothetical
+    Step 1) carries an update — same handling as SYNC_UPDATE."""
+    update_payload = b"step-2-update"
+    msg = bytes([collab.MSG_SYNC, collab.SYNC_STEP_2]) \
+          + collab._write_varuint_payload(update_payload)
+
+    reply = collab._handle_sync_message("s2", msg)
+    assert reply is None
+
+    logged = list(collab.replay_updates("s2"))
+    assert logged == [update_payload]
+
+
+def test_sync_step_1_replays_log_to_new_joiner():
+    """SYNC_STEP_1: server replies with every logged update framed as
+    individual SYNC_STEP_2 messages. The Yjs client decodes the reply as
+    a stream of frames and applies each."""
+    # Pre-seed three updates
+    payloads = [b"update-a", b"update-b", b"update-c"]
+    for p in payloads:
+        collab.append_update("replay", p)
+
+    # Client sends a Step 1 (the state-vector payload is irrelevant to us —
+    # we send everything we know regardless).
+    msg = bytes([collab.MSG_SYNC, collab.SYNC_STEP_1]) \
+          + collab._write_varuint_payload(b"any-state-vector")
+
+    reply = collab._handle_sync_message("replay", msg)
+    assert reply is not None
+
+    frames = _decode_frames(reply)
+    assert len(frames) == 3, f"expected 3 Step 2 frames, got {len(frames)}"
+    for (msg_type, sub_type, payload), expected in zip(frames, payloads):
+        assert msg_type == collab.MSG_SYNC
+        assert sub_type == collab.SYNC_STEP_2
+        assert payload == expected
+
+
+def test_sync_step_1_on_empty_room_returns_none():
+    """No logged updates = no Step 2 frames to send. None tells the route
+    handler not to fan out an empty reply."""
+    msg = bytes([collab.MSG_SYNC, collab.SYNC_STEP_1]) \
+          + collab._write_varuint_payload(b"")
+    assert collab._handle_sync_message("empty-replay", msg) is None
 
 
 def test_garbage_messages_dont_crash_handler():
@@ -434,42 +401,50 @@ def test_garbage_messages_dont_crash_handler():
     assert collab._handle_sync_message("rC", bytes([collab.MSG_AWARENESS, 0])) is None
 
 
-@pytest.mark.skipif(not _have_y_py(), reason="y-py not installed")
-def test_full_handshake_persists_across_restart(tmp_path, monkeypatch):
-    """End-to-end: client A sends an update, room empties (persist trigger),
-    client B reconnects, server replies with Sync Step 2 containing A's content."""
-    import y_py
-
+def test_full_handshake_persists_across_restart():
+    """End-to-end: client A's update gets logged, room empties, client B
+    reconnects, server replies with a Step 2 frame carrying A's update."""
     # Client A: connect, send an update, disconnect
     sockA = MagicMock()
     collab._add_socket("e2e", sockA)
-    client_a_doc = y_py.YDoc()
-    with client_a_doc.begin_transaction() as txn:
-        client_a_doc.get_text("monaco").extend(txn, "persisted-by-A")
-    update_a = y_py.encode_state_as_update(client_a_doc)
+    a_update = b"persisted-by-A-update-bytes"
     msg_a = bytes([collab.MSG_SYNC, collab.SYNC_UPDATE]) \
-            + collab._write_varuint_payload(update_a)
+            + collab._write_varuint_payload(a_update)
     collab._handle_sync_message("e2e", msg_a)
     collab._remove_socket("e2e", sockA)
-    # Server should have flushed to disk on empty
-    assert collab.load_room("e2e") is not None
-    # And freed memory
-    assert "e2e" not in collab._docs
 
-    # Client B: connect, send Sync Step 1 with an empty state vector
+    # Log should hold A's update
+    assert list(collab.replay_updates("e2e")) == [a_update]
+
+    # Client B: connect, send Sync Step 1
     sockB = MagicMock()
     collab._add_socket("e2e", sockB)
-    empty_sv = y_py.encode_state_vector(y_py.YDoc())
     step1 = bytes([collab.MSG_SYNC, collab.SYNC_STEP_1]) \
-            + collab._write_varuint_payload(empty_sv)
+            + collab._write_varuint_payload(b"")
     reply = collab._handle_sync_message("e2e", step1)
     assert reply is not None
 
-    # B applies the server's Step 2 reply — should contain A's content
-    # Reply frame: [type][sub_type][varuint(len)][update]
-    sub_type, offset = collab._read_varuint(reply, 1)
+    # Reply must contain A's update as a Step 2 frame
+    frames = _decode_frames(reply)
+    assert len(frames) == 1
+    msg_type, sub_type, payload = frames[0]
+    assert msg_type == collab.MSG_SYNC
     assert sub_type == collab.SYNC_STEP_2
-    update_bytes, _ = collab._read_varuint_payload(reply, offset)
-    client_b_doc = y_py.YDoc()
-    y_py.apply_update(client_b_doc, update_bytes)
-    assert str(client_b_doc.get_text("monaco")) == "persisted-by-A"
+    assert payload == a_update
+
+
+def test_no_y_py_dependency_in_module():
+    """Regression guard: collab.py must not actually USE y_py — the
+    unsendable panic was the whole reason for this refactor. Docstring
+    references to y_py are fine (they explain why we removed it)."""
+    import re
+    import inspect
+    src = inspect.getsource(collab)
+    # Strip docstring sections (triple-quoted blocks)
+    code_only = re.sub(r'"""[\s\S]*?"""', "", src)
+    code_only = re.sub(r"'''[\s\S]*?'''", "", code_only)
+    # Also strip single-line comments
+    code_only = re.sub(r"^\s*#.*$", "", code_only, flags=re.MULTILINE)
+    assert "import y_py" not in code_only
+    # No attribute access like y_py.YDoc, y_py.apply_update, etc.
+    assert not re.search(r"\by_py\.\w+", code_only)
