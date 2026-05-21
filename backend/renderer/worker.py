@@ -116,6 +116,13 @@ SCENE_REGISTRY = {
     "topological_sort":        ("scenes/dsa_pattern_scene.py", "TopologicalSortScene"),
     "matrix_rotation":         ("scenes/dsa_pattern_scene.py", "MatrixRotationScene"),
     "recursion_tree_dc":       ("scenes/dsa_pattern_scene.py", "RecursionTreeDCScene"),
+    # DSA — DP family (2D table scenes for interview prep)
+    "knapsack_01":             ("scenes/dsa_pattern_scene.py", "Knapsack01Scene"),
+    "lcs":                     ("scenes/dsa_pattern_scene.py", "LCSScene"),
+    "edit_distance":           ("scenes/dsa_pattern_scene.py", "EditDistanceScene"),
+    "coin_change_2d":          ("scenes/dsa_pattern_scene.py", "CoinChange2DScene"),
+    "lis":                     ("scenes/dsa_pattern_scene.py", "LISScene"),
+    "dp_progression":          ("scenes/dsa_pattern_scene.py", "DPProgressionScene"),
     # Arithmetic
     "number_line":        ("scenes/arithmetic_scene.py",  "NumberLineScene"),
     "fraction":           ("scenes/arithmetic_scene.py",  "FractionScene"),

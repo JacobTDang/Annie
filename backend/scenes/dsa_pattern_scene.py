@@ -18,7 +18,7 @@ from scenes.dsa_primitives import (
     DEFAULT_CELL, HILITE, KEEP, REJECT, PTR_COLORS, PANEL_BG,
     ArrayStrip, Pointer, HighlightZone, HashMapPanel, StatePanel,
     ComparisonMarker, StackWidget, DependencyArc,
-    GridPanel, BinaryTreePanel, RecursionTree, IntervalBars,
+    GridPanel, GridArrow, BinaryTreePanel, RecursionTree, IntervalBars,
     DoublyLinkedListPanel, GraphPanel, CodePanel,
     ComplexityBadge, InvariantOverlay, BruteForceComparison, BinaryRegister,
     load_params, show_title_card, caption_strip, result_box, action_text,
@@ -4930,4 +4930,433 @@ class TrappingRainWaterScene(Scene):
         self.wait(0.3)
         self.play(FadeIn(cmp.vgroup), run_time=0.4)
         self.wait(1.0)
+        self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=0.5)
+
+
+# ---------------------------------------------------------------------------
+# DP family — 2D table scenes (Phase 2 of DP interview-prep batch)
+# ---------------------------------------------------------------------------
+
+class Knapsack01Scene(Scene):
+    """0/1 Knapsack: dp[i][w] = max value using first i items, capacity w.
+
+    Animates the (N+1) × (W+1) table row by row. For each cell, highlights
+    the two predecessor cells (dp[i-1][w] for "skip item" and dp[i-1][w-wi]
+    for "take item"), draws arrows, then writes the max.
+
+    Params:
+        items: list of {"weight": int, "value": int}
+        capacity: int
+    """
+
+    def construct(self):
+        params = load_params()
+        items = params.get("items", [{"weight": 2, "value": 3},
+                                       {"weight": 3, "value": 4},
+                                       {"weight": 4, "value": 5}])
+        capacity = int(params.get("capacity", 5))
+        items = items[:5]              # cap render time
+        capacity = min(capacity, 8)
+
+        show_title_card(self, "0/1 Knapsack")
+
+        N = len(items)
+        W = capacity
+        dp = [[0] * (W + 1) for _ in range(N + 1)]
+
+        grid_values = [[str(0) for _ in range(W + 1)] for _ in range(N + 1)]
+        grid = GridPanel(grid_values, cell_size=0.6)
+        self.play(FadeIn(grid.vgroup), run_time=0.4)
+
+        item_lines = [Text(f"#{i+1}: w={it['weight']}, v={it['value']}",
+                             font_size=14, color=GRAY)
+                       for i, it in enumerate(items)]
+        items_vg = VGroup(*item_lines).arrange(DOWN, aligned_edge=LEFT, buff=0.12)
+        items_vg.next_to(grid.vgroup, LEFT, buff=0.5)
+        self.play(FadeIn(items_vg), run_time=0.3)
+
+        cap_text = Text(f"capacity = {capacity}", font_size=14, color=YELLOW)
+        cap_text.next_to(grid.vgroup, UP, buff=0.3)
+        self.play(FadeIn(cap_text), run_time=0.2)
+
+        arrows: list = []
+        for i in range(1, N + 1):
+            wi = items[i - 1]["weight"]
+            vi = items[i - 1]["value"]
+            for w in range(W + 1):
+                self.play(grid.anim_set_fill(i, w, YELLOW), run_time=0.10)
+                for old in arrows:
+                    self.remove(old)
+                arrows = []
+                if wi > w:
+                    dp[i][w] = dp[i - 1][w]
+                    a = GridArrow.between(grid, (i - 1, w), (i, w), color=TEAL)
+                    self.play(Create(a), run_time=0.15)
+                    arrows.append(a)
+                else:
+                    skip = dp[i - 1][w]
+                    take = dp[i - 1][w - wi] + vi
+                    dp[i][w] = max(skip, take)
+                    self.play(grid.anim_set_fill(i - 1, w, BLUE, 0.5),
+                              grid.anim_set_fill(i - 1, w - wi, GREEN, 0.5),
+                              run_time=0.15)
+                    a1 = GridArrow.between(grid, (i - 1, w), (i, w), color=BLUE)
+                    a2 = GridArrow.between(grid, (i - 1, w - wi), (i, w),
+                                             color=GREEN)
+                    self.play(Create(a1), Create(a2), run_time=0.15)
+                    arrows.extend([a1, a2])
+                self.play(grid.anim_set_value(i, w, str(dp[i][w])),
+                          grid.anim_set_fill(i, w, DEFAULT_CELL, 0.7),
+                          run_time=0.10)
+
+        for old in arrows:
+            self.remove(old)
+        rb = result_box(f"Max value = {dp[N][W]}", font_size=24)
+        rb.to_edge(DOWN, buff=0.6)
+        self.play(grid.anim_set_fill(N, W, GREEN, 0.85), run_time=0.4)
+        self.play(FadeIn(rb), run_time=0.4)
+        self.wait(1.0)
+        self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=0.5)
+
+
+def _fill_2d_dp(scene, grid, dp, *, predecessor_fn, color="GREEN",
+                 highlight_color=YELLOW, run_time=0.10):
+    """Shared 2D-DP fill loop used by LCS / EditDistance / CoinChange2D.
+
+    For each cell (i, j) in row-major order, the caller-supplied
+    ``predecessor_fn(i, j, dp)`` returns:
+      - the new dp[i][j] value (str), and
+      - a list of ((from_r, from_c), arrow_color) tuples to draw.
+
+    The base row (i=0) and base column (j=0) are skipped — they're
+    expected to be initialized before calling.
+    """
+    arrows: list = []
+    rows = len(dp)
+    cols = len(dp[0]) if rows else 0
+    for i in range(1, rows):
+        for j in range(1, cols):
+            scene.play(grid.anim_set_fill(i, j, highlight_color),
+                       run_time=run_time)
+            for old in arrows:
+                scene.remove(old)
+            arrows = []
+            new_val, deps = predecessor_fn(i, j, dp)
+            dp[i][j] = new_val
+            for (fr, fc), col in deps:
+                a = GridArrow.between(grid, (fr, fc), (i, j), color=col)
+                arrows.append(a)
+            if arrows:
+                scene.play(*[Create(a) for a in arrows], run_time=run_time)
+            scene.play(grid.anim_set_value(i, j, str(dp[i][j])),
+                       grid.anim_set_fill(i, j, DEFAULT_CELL, 0.7),
+                       run_time=run_time)
+    for old in arrows:
+        scene.remove(old)
+
+
+class LCSScene(Scene):
+    """Longest Common Subsequence: dp[i][j] = LCS length of s1[:i], s2[:j].
+
+    Renders the (|s1|+1) × (|s2|+1) table with diagonal-match / max-of-
+    neighbors arrows. Header row + column show the two strings.
+    """
+
+    def construct(self):
+        params = load_params()
+        s1 = str(params.get("s1", "AGC"))[:8]
+        s2 = str(params.get("s2", "GAC"))[:8]
+
+        show_title_card(self, f"LCS — '{s1}' vs '{s2}'")
+
+        N, M = len(s1), len(s2)
+        dp = [[0] * (M + 1) for _ in range(N + 1)]
+        # Header row labels: row 0 = "", col 0 = "", then chars of s2/s1
+        values = [["·"] + list(s2)]
+        for i in range(N):
+            values.append([s1[i]] + ["0"] * M)
+        # Pre-pad row 0 with 0s after the header (won't be animated)
+        values[0] = ["·"] + [c for c in s2]
+        for r in range(1, N + 1):
+            for c in range(1, M + 1):
+                values[r][c] = "0"
+
+        grid = GridPanel(values, cell_size=0.55, with_indices=False)
+        self.play(FadeIn(grid.vgroup), run_time=0.4)
+
+        def predecessor_fn(i, j, dp_local):
+            # Skip the "header" row 0 and column 0 (they're labels here,
+            # not dp values) — adjust to dp[i-1][j-1] semantics.
+            ci, cj = i - 1, j - 1
+            if s1[ci] == s2[cj]:
+                val = dp_local[i - 1][j - 1] + 1
+                return val, [((i - 1, j - 1), GREEN)]
+            a, b = dp_local[i - 1][j], dp_local[i][j - 1]
+            if a >= b:
+                return a, [((i - 1, j), TEAL)]
+            return b, [((i, j - 1), BLUE)]
+
+        _fill_2d_dp(self, grid, dp, predecessor_fn=predecessor_fn)
+
+        rb = result_box(f"LCS length = {dp[N][M]}", font_size=24)
+        rb.to_edge(DOWN, buff=0.6)
+        self.play(grid.anim_set_fill(N, M, GREEN, 0.85), run_time=0.4)
+        self.play(FadeIn(rb), run_time=0.4)
+        self.wait(1.0)
+        self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=0.5)
+
+
+class EditDistanceScene(Scene):
+    """Edit Distance (Levenshtein): dp[i][j] = min ops to transform
+    s1[:i] → s2[:j]. Each cell picks min of insert/delete/replace."""
+
+    def construct(self):
+        params = load_params()
+        s1 = str(params.get("s1", "cat"))[:6]
+        s2 = str(params.get("s2", "bat"))[:6]
+
+        show_title_card(self, f"Edit distance — '{s1}' → '{s2}'")
+
+        N, M = len(s1), len(s2)
+        dp = [[0] * (M + 1) for _ in range(N + 1)]
+        for i in range(N + 1):
+            dp[i][0] = i
+        for j in range(M + 1):
+            dp[0][j] = j
+        values = [[str(dp[r][c]) for c in range(M + 1)] for r in range(N + 1)]
+        grid = GridPanel(values, cell_size=0.6, with_indices=False)
+        self.play(FadeIn(grid.vgroup), run_time=0.4)
+
+        def predecessor_fn(i, j, dp_local):
+            ci, cj = i - 1, j - 1
+            if s1[ci] == s2[cj]:
+                return dp_local[i - 1][j - 1], [((i - 1, j - 1), GREEN)]
+            insert = dp_local[i][j - 1]
+            delete = dp_local[i - 1][j]
+            replace = dp_local[i - 1][j - 1]
+            best = min(insert, delete, replace) + 1
+            deps = []
+            if insert <= delete and insert <= replace:
+                deps.append(((i, j - 1), BLUE))
+            elif delete <= replace:
+                deps.append(((i - 1, j), TEAL))
+            else:
+                deps.append(((i - 1, j - 1), PURPLE))
+            return best, deps
+
+        _fill_2d_dp(self, grid, dp, predecessor_fn=predecessor_fn)
+
+        rb = result_box(f"Edit distance = {dp[N][M]}", font_size=24)
+        rb.to_edge(DOWN, buff=0.6)
+        self.play(grid.anim_set_fill(N, M, GREEN, 0.85), run_time=0.4)
+        self.play(FadeIn(rb), run_time=0.4)
+        self.wait(1.0)
+        self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=0.5)
+
+
+class CoinChange2DScene(Scene):
+    """Coin Change (number of ways): dp[i][w] = number of ways to make
+    amount w using the first i coins."""
+
+    def construct(self):
+        params = load_params()
+        coins = list(params.get("coins", [1, 2, 5]))[:4]
+        amount = int(params.get("amount", 5))
+        amount = min(amount, 10)
+
+        show_title_card(self, f"Coin Change — amount={amount}")
+
+        N = len(coins)
+        dp = [[0] * (amount + 1) for _ in range(N + 1)]
+        for i in range(N + 1):
+            dp[i][0] = 1   # one way to make 0: pick nothing
+        values = [[str(dp[r][c]) for c in range(amount + 1)]
+                    for r in range(N + 1)]
+        grid = GridPanel(values, cell_size=0.6, with_indices=False)
+        self.play(FadeIn(grid.vgroup), run_time=0.4)
+
+        coin_lines = [Text(f"coin {i}: {c}", font_size=14, color=GRAY)
+                       for i, c in enumerate(coins)]
+        coins_vg = VGroup(*coin_lines).arrange(DOWN, aligned_edge=LEFT, buff=0.10)
+        coins_vg.next_to(grid.vgroup, LEFT, buff=0.4)
+        self.play(FadeIn(coins_vg), run_time=0.3)
+
+        def predecessor_fn(i, j, dp_local):
+            coin = coins[i - 1]
+            skip = dp_local[i - 1][j]
+            deps = [((i - 1, j), TEAL)]
+            take = 0
+            if j >= coin:
+                take = dp_local[i][j - coin]
+                deps.append(((i, j - coin), GREEN))
+            return skip + take, deps
+
+        _fill_2d_dp(self, grid, dp, predecessor_fn=predecessor_fn)
+
+        rb = result_box(f"Ways = {dp[N][amount]}", font_size=24)
+        rb.to_edge(DOWN, buff=0.6)
+        self.play(grid.anim_set_fill(N, amount, GREEN, 0.85), run_time=0.4)
+        self.play(FadeIn(rb), run_time=0.4)
+        self.wait(1.0)
+        self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=0.5)
+
+
+class LISScene(Scene):
+    """Longest Increasing Subsequence (O(n²) DP).
+    dp[i] = longest IS ending at index i. For each i, iterate j < i,
+    arrow from j → i if nums[j] < nums[i] and dp[j]+1 > dp[i]."""
+
+    def construct(self):
+        params = load_params()
+        nums = list(params.get("nums", [3, 1, 4, 1, 5, 9, 2, 6]))[:8]
+
+        show_title_card(self, f"LIS — {nums}")
+
+        N = len(nums)
+        # Top row: input nums; bottom row: dp values (start at 1 each).
+        values = [[str(v) for v in nums],
+                  ["1"] * N]
+        grid = GridPanel(values, cell_size=0.7, with_indices=False)
+        self.play(FadeIn(grid.vgroup), run_time=0.4)
+
+        dp = [1] * N
+        # Label the rows
+        row_lbl_top = Text("nums", font_size=14, color=GRAY)
+        row_lbl_top.next_to(grid.vgroup, LEFT, buff=0.2)
+        row_lbl_top.shift(UP * grid.cell_size * 0.5)
+        row_lbl_bot = Text("dp", font_size=14, color=GRAY)
+        row_lbl_bot.next_to(grid.vgroup, LEFT, buff=0.2)
+        row_lbl_bot.shift(DOWN * grid.cell_size * 0.5)
+        self.play(FadeIn(row_lbl_top), FadeIn(row_lbl_bot), run_time=0.2)
+
+        arrows: list = []
+        for i in range(1, N):
+            self.play(grid.anim_set_fill(1, i, YELLOW), run_time=0.10)
+            for old in arrows:
+                self.remove(old)
+            arrows = []
+            best_j = -1
+            for j in range(i):
+                if nums[j] < nums[i] and dp[j] + 1 > dp[i]:
+                    dp[i] = dp[j] + 1
+                    best_j = j
+            if best_j >= 0:
+                a = GridArrow.between(grid, (1, best_j), (1, i), color=GREEN)
+                arrows.append(a)
+                self.play(Create(a), run_time=0.15)
+            self.play(grid.anim_set_value(1, i, str(dp[i])),
+                      grid.anim_set_fill(1, i, DEFAULT_CELL, 0.7),
+                      run_time=0.10)
+        for old in arrows:
+            self.remove(old)
+
+        rb = result_box(f"LIS length = {max(dp)}", font_size=24)
+        rb.to_edge(DOWN, buff=0.6)
+        self.play(FadeIn(rb), run_time=0.4)
+        self.wait(1.0)
+        self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=0.5)
+
+
+class DPProgressionScene(Scene):
+    """Recursion → memoization → tabulation triptych.
+
+    Shows the same problem (default: fibonacci(n)) in three regions:
+      1. Naive recursion tree (exponential, duplicate subcalls)
+      2. Memoized recursion (table fills, dupes are cache hits)
+      3. Bottom-up tabulation (table fills in iteration order)
+
+    For the hackathon scope, the recursion-tree panel is symbolic — the
+    other two panels are real fills of a 1D `dp[]` table.
+    """
+
+    def construct(self):
+        params = load_params()
+        problem = str(params.get("problem", "fibonacci"))
+        n = int(params.get("n", 5))
+        n = min(max(n, 2), 8)
+
+        show_title_card(self, f"Why DP works — {problem}(n={n})")
+
+        # Region 1 — Recursion tree (symbolic; just shows duplicate calls)
+        tree_title = Text("1. Naïve recursion", font_size=20, color=YELLOW)
+        tree_title.to_edge(UP, buff=0.8)
+        self.play(FadeIn(tree_title), run_time=0.3)
+
+        dup_text = Text(f"fib({n-1}) and fib({n-2}) recompute fib({n-3}) twice",
+                          font_size=16, color=GRAY)
+        dup_text.next_to(tree_title, DOWN, buff=0.3)
+        self.play(FadeIn(dup_text), run_time=0.3)
+
+        complexity_bad = Text(f"Time: O(2^n) — exponential",
+                                font_size=16, color="#fca5a5")
+        complexity_bad.next_to(dup_text, DOWN, buff=0.2)
+        self.play(FadeIn(complexity_bad), run_time=0.3)
+        self.wait(1.5)
+        self.play(FadeOut(tree_title), FadeOut(dup_text),
+                  FadeOut(complexity_bad), run_time=0.3)
+
+        # Region 2 — Memoization (table fills, deduped subcalls)
+        memo_title = Text("2. Memoized recursion", font_size=20, color=YELLOW)
+        memo_title.to_edge(UP, buff=0.8)
+        memo_values = [["·"] + [str(i) for i in range(n + 1)],
+                       ["·"] + ["—"] * (n + 1)]
+        memo_grid = GridPanel(memo_values, cell_size=0.6, with_indices=False)
+        self.play(FadeIn(memo_title), FadeIn(memo_grid.vgroup), run_time=0.4)
+
+        memo_table = {0: 0, 1: 1}
+        # Visually seed dp[0] = 0, dp[1] = 1
+        self.play(memo_grid.anim_set_value(1, 1, "0"),
+                  memo_grid.anim_set_value(1, 2, "1"),
+                  memo_grid.anim_set_fill(1, 1, GREEN, 0.7),
+                  memo_grid.anim_set_fill(1, 2, GREEN, 0.7),
+                  run_time=0.3)
+        for k in range(2, n + 1):
+            memo_table[k] = memo_table[k - 1] + memo_table[k - 2]
+            self.play(memo_grid.anim_set_fill(1, k + 1, YELLOW), run_time=0.10)
+            self.play(memo_grid.anim_set_value(1, k + 1, str(memo_table[k])),
+                      memo_grid.anim_set_fill(1, k + 1, GREEN, 0.7),
+                      run_time=0.10)
+
+        complexity_good = Text(f"Time: O(n) — each subproblem solved once",
+                                 font_size=16, color="#10b981")
+        complexity_good.next_to(memo_grid.vgroup, DOWN, buff=0.4)
+        self.play(FadeIn(complexity_good), run_time=0.3)
+        self.wait(1.5)
+        self.play(FadeOut(memo_title), FadeOut(memo_grid.vgroup),
+                  FadeOut(complexity_good), run_time=0.3)
+
+        # Region 3 — Tabulation (canonical bottom-up)
+        tab_title = Text("3. Bottom-up tabulation", font_size=20, color=YELLOW)
+        tab_title.to_edge(UP, buff=0.8)
+        tab_values = [["·"] + [str(i) for i in range(n + 1)],
+                      ["·"] + ["—"] * (n + 1)]
+        tab_grid = GridPanel(tab_values, cell_size=0.6, with_indices=False)
+        self.play(FadeIn(tab_title), FadeIn(tab_grid.vgroup), run_time=0.4)
+
+        tab = [0] * (n + 1)
+        tab[0], tab[1] = 0, 1
+        arrows: list = []
+        self.play(tab_grid.anim_set_value(1, 1, "0"),
+                  tab_grid.anim_set_value(1, 2, "1"),
+                  run_time=0.3)
+        for k in range(2, n + 1):
+            tab[k] = tab[k - 1] + tab[k - 2]
+            self.play(tab_grid.anim_set_fill(1, k + 1, YELLOW), run_time=0.10)
+            for old in arrows:
+                self.remove(old)
+            arrows = []
+            a1 = GridArrow.between(tab_grid, (1, k), (1, k + 1), color=BLUE)
+            a2 = GridArrow.between(tab_grid, (1, k - 1), (1, k + 1), color=GREEN)
+            arrows.extend([a1, a2])
+            self.play(Create(a1), Create(a2), run_time=0.15)
+            self.play(tab_grid.anim_set_value(1, k + 1, str(tab[k])),
+                      tab_grid.anim_set_fill(1, k + 1, DEFAULT_CELL, 0.7),
+                      run_time=0.10)
+        for old in arrows:
+            self.remove(old)
+
+        rb = result_box(f"{problem}({n}) = {tab[n]}", font_size=22)
+        rb.to_edge(DOWN, buff=0.6)
+        self.play(FadeIn(rb), run_time=0.3)
+        self.wait(1.5)
         self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=0.5)

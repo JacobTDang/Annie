@@ -441,6 +441,57 @@ class RecursionTreeDCSchema(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 2D DP family (Phase 2 of DP interview-prep batch)
+# ---------------------------------------------------------------------------
+
+class KnapsackItem(BaseModel):
+    weight: int = Field(..., ge=1, le=20)
+    value: int = Field(..., ge=0, le=99)
+
+
+class Knapsack01Schema(BaseModel):
+    scene: Literal["knapsack_01"] = "knapsack_01"
+    items: List[KnapsackItem] = Field(..., min_length=1, max_length=5)
+    capacity: int = Field(..., ge=1, le=8)
+    caption: str = ""
+
+
+class LCSSchema(BaseModel):
+    scene: Literal["lcs"] = "lcs"
+    s1: str = Field(..., min_length=1, max_length=8)
+    s2: str = Field(..., min_length=1, max_length=8)
+    caption: str = ""
+
+
+class EditDistanceSchema(BaseModel):
+    scene: Literal["edit_distance"] = "edit_distance"
+    s1: str = Field(..., min_length=1, max_length=6)
+    s2: str = Field(..., min_length=1, max_length=6)
+    caption: str = ""
+
+
+class CoinChange2DSchema(BaseModel):
+    scene: Literal["coin_change_2d"] = "coin_change_2d"
+    coins: List[int] = Field(..., min_length=1, max_length=4)
+    amount: int = Field(..., ge=1, le=10)
+    caption: str = ""
+
+
+class LISSchema(BaseModel):
+    scene: Literal["lis"] = "lis"
+    nums: List[int] = Field(..., min_length=2, max_length=8)
+    caption: str = ""
+
+
+class DPProgressionSchema(BaseModel):
+    scene: Literal["dp_progression"] = "dp_progression"
+    problem: Literal["fibonacci", "climb_stairs",
+                     "coin_change_min", "unique_paths"] = "fibonacci"
+    n: int = Field(default=5, ge=2, le=8)
+    caption: str = ""
+
+
+# ---------------------------------------------------------------------------
 # Arithmetic schemas
 # ---------------------------------------------------------------------------
 
