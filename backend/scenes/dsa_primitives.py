@@ -627,6 +627,86 @@ class GridPanel:
     def cell_center(self, r: int, c: int):
         return self.cells[r][c].get_center()
 
+    # Edge anchors — used by GridArrow + dependency arcs so the arrowhead
+    # lands on a cell's perimeter instead of overlapping its number text.
+    def cell_top(self, r: int, c: int):
+        return self.cells[r][c][0].get_top()
+
+    def cell_bottom(self, r: int, c: int):
+        return self.cells[r][c][0].get_bottom()
+
+    def cell_left(self, r: int, c: int):
+        return self.cells[r][c][0].get_left()
+
+    def cell_right(self, r: int, c: int):
+        return self.cells[r][c][0].get_right()
+
+    def cell_edge(self, r: int, c: int, side: str):
+        """Side-of-cell anchor by name. Accepts 'top', 'bottom', 'left',
+        'right', 'center'. Unknown side falls back to center."""
+        return {
+            "top":    self.cell_top,
+            "bottom": self.cell_bottom,
+            "left":   self.cell_left,
+            "right":  self.cell_right,
+            "center": self.cell_center,
+        }.get(side, self.cell_center)(r, c)
+
+
+# ---------------------------------------------------------------------------
+# Primitive 9b — GridArrow (curved dependency arrow between two grid cells)
+# ---------------------------------------------------------------------------
+
+class GridArrow:
+    """Curved arrow between two cells of the same ``GridPanel``.
+
+    Used by the 2D DP scenes to show ``dp[r][c]`` depending on
+    ``dp[r-1][c]`` (vertical) / ``dp[r][c-1]`` (horizontal) /
+    ``dp[r-1][c-1]`` (diagonal). The arrow auto-chooses edge anchors
+    based on the relative position of the cells so the arrowhead lands
+    on the perimeter rather than the cell text.
+
+    Returns a Manim ``CurvedArrow``. Color + label optional.
+    """
+
+    @staticmethod
+    def between(grid: "GridPanel", from_rc, to_rc,
+                color=TEAL, stroke_width: float = 2, label: str | None = None):
+        from_r, from_c = from_rc
+        to_r, to_c = to_rc
+
+        # Pick edge anchors based on relative position. Vertical arrows
+        # leave the bottom of the source and enter the top of the target
+        # (or vice versa); diagonal arrows use corners.
+        if from_r < to_r and from_c == to_c:
+            start = grid.cell_bottom(from_r, from_c)
+            end   = grid.cell_top(to_r, to_c)
+        elif from_r > to_r and from_c == to_c:
+            start = grid.cell_top(from_r, from_c)
+            end   = grid.cell_bottom(to_r, to_c)
+        elif from_r == to_r and from_c < to_c:
+            start = grid.cell_right(from_r, from_c)
+            end   = grid.cell_left(to_r, to_c)
+        elif from_r == to_r and from_c > to_c:
+            start = grid.cell_left(from_r, from_c)
+            end   = grid.cell_right(to_r, to_c)
+        else:
+            # Diagonal — use corners
+            start = grid.cell_center(from_r, from_c)
+            end   = grid.cell_center(to_r, to_c)
+
+        # Small curve so adjacent-cell arrows don't draw through the
+        # cell content. Diagonal arrows use a smaller angle.
+        angle = -PI / 6 if (from_r == to_r or from_c == to_c) else -PI / 8
+        arrow = CurvedArrow(start, end, color=color, angle=angle,
+                            stroke_width=stroke_width)
+        if label:
+            txt = Text(str(label), font_size=max(10, int(11 * grid.cell_size)),
+                       color=color).next_to(arrow.point_from_proportion(0.5),
+                                              UP, buff=0.04)
+            return VGroup(arrow, txt)
+        return arrow
+
 
 # ---------------------------------------------------------------------------
 # Primitive 10 — BinaryTreePanel  (complete binary tree)

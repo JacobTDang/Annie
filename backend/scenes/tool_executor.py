@@ -156,11 +156,21 @@ class ToolExecutor:
 
     def _tool_show_grid(self, rows: int, cols: int, values: list,
                         label: str = "", element_id: str = "grid_0"):
-        flat = []
-        for r in values:
-            for c in r:
-                flat.append(str(c))
-        panel = GridPanel(rows, cols, flat)
+        # Normalize values into a 2D list-of-lists matching the declared
+        # rows × cols shape. The agent sometimes passes a flat list +
+        # rows/cols; reshape it. (Previously this passed (rows, cols, flat)
+        # to a GridPanel constructor that takes 2D `values` directly, which
+        # silently errored. Bug fix: reshape + pass 2D.)
+        cells_2d: list[list[str]]
+        if values and isinstance(values[0], list):
+            cells_2d = [[str(c) for c in row] for row in values]
+        else:
+            flat = [str(v) for v in values]
+            cells_2d = []
+            for r in range(rows):
+                start = r * cols
+                cells_2d.append(flat[start:start + cols])
+        panel = GridPanel(cells_2d)
         self.scene.play(FadeIn(panel.vgroup), run_time=0.6)
         if label:
             lbl = Text(label, font_size=18, color=GRAY)
@@ -168,6 +178,63 @@ class ToolExecutor:
             self.scene.play(FadeIn(lbl), run_time=0.3)
         self.state[element_id] = panel
         self.vgroups[element_id] = panel.vgroup
+
+    # ── Grid-aware cell ops (Phase 1) ────────────────────────────────────────
+    # The existing highlight_cells / set_cell_value tools only work on 1D
+    # ArrayStrips. These three tools cover the 2D DP table case.
+
+    def _tool_set_grid_cell(self, element_id: str, row: int, col: int,
+                             value, color: str | None = None):
+        """Update a single cell's value (and optionally its fill color).
+        Used by 2D DP scenes to animate `dp[row][col] = value`."""
+        grid = self.state.get(element_id)
+        if grid is None or not hasattr(grid, "anim_set_value"):
+            return
+        if not (0 <= row < grid.rows and 0 <= col < grid.cols):
+            return
+        anims = [grid.anim_set_value(row, col, value)]
+        if color is not None:
+            anims.append(grid.anim_set_fill(row, col, _color(color)))
+        self.scene.play(*anims, run_time=0.4)
+
+    def _tool_highlight_grid_cells(self, element_id: str, cells: list,
+                                    color: str = "YELLOW"):
+        """Pulse one or more (row, col) cells. ``cells`` is a list of
+        2-element lists/tuples: [[r1, c1], [r2, c2], ...]."""
+        grid = self.state.get(element_id)
+        if grid is None or not hasattr(grid, "anim_set_fill"):
+            return
+        anims = []
+        for rc in cells:
+            try:
+                r, c = int(rc[0]), int(rc[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if not (0 <= r < grid.rows and 0 <= c < grid.cols):
+                continue
+            anims.append(grid.anim_set_fill(r, c, _color(color)))
+        if anims:
+            self.scene.play(*anims, run_time=0.4)
+
+    def _tool_draw_grid_arrow(self, element_id: str,
+                               from_row: int, from_col: int,
+                               to_row: int, to_col: int,
+                               color: str = "TEAL",
+                               label: str | None = None):
+        """Curved dependency arrow between two cells of the same grid.
+        Used by DP scenes to show `dp[to_r][to_c]` was computed from
+        `dp[from_r][from_c]`."""
+        grid = self.state.get(element_id)
+        if grid is None or not hasattr(grid, "cell_top"):
+            return
+        if not (0 <= from_row < grid.rows and 0 <= from_col < grid.cols):
+            return
+        if not (0 <= to_row < grid.rows and 0 <= to_col < grid.cols):
+            return
+        from scenes.dsa_primitives import GridArrow
+        arrow = GridArrow.between(grid, (from_row, from_col), (to_row, to_col),
+                                    color=_color(color), label=label)
+        self.scene.play(Create(arrow), run_time=0.4)
 
     def _tool_show_code(self, lines: list, anchor: str = "UL",
                         element_id: str = "code_0"):

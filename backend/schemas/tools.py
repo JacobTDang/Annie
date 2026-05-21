@@ -245,6 +245,72 @@ VISUAL_TOOLS: list[dict] = [
         "required": ["element_id", "index", "value"],
     },
 
+    # ── Grid-aware ops (Phase 1: 2D DP tables) ───────────────────────────────
+
+    {
+        "name": "set_grid_cell",
+        "description": (
+            "Update a single (row, col) cell of a 2D grid (created via "
+            "show_grid). Optionally tint the cell. Use for 2D DP updates: "
+            "dp[i][j] = max(dp[i-1][j], dp[i][j-1])."
+        ),
+        "parameters": {
+            "element_id": {"type": "string"},
+            "row": {"type": "integer"},
+            "col": {"type": "integer"},
+            "value": {"type": "string", "description": "New value to display."},
+            "color": {
+                "type": "string",
+                "description": "Optional fill color name (e.g. GREEN, YELLOW).",
+                "default": None,
+            },
+        },
+        "required": ["element_id", "row", "col", "value"],
+    },
+
+    {
+        "name": "highlight_grid_cells",
+        "description": (
+            "Tint one or more (row, col) cells of a 2D grid. Use to mark "
+            "the cells a current DP cell depends on, BEFORE drawing arrows."
+        ),
+        "parameters": {
+            "element_id": {"type": "string"},
+            "cells": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "minItems": 2,
+                    "maxItems": 2,
+                },
+                "description": "List of [row, col] pairs.",
+            },
+            "color": {"type": "string", "default": "YELLOW"},
+        },
+        "required": ["element_id", "cells"],
+    },
+
+    {
+        "name": "draw_grid_arrow",
+        "description": (
+            "Draw a curved dependency arrow between two cells of the same "
+            "2D grid. Use to visualize WHICH previous cell dp[i][j] was "
+            "computed from. Color it differently per dependency direction "
+            "(e.g. TEAL for dp[i-1][j], GREEN for dp[i][j-1])."
+        ),
+        "parameters": {
+            "element_id": {"type": "string"},
+            "from_row": {"type": "integer"},
+            "from_col": {"type": "integer"},
+            "to_row": {"type": "integer"},
+            "to_col": {"type": "integer"},
+            "color": {"type": "string", "default": "TEAL"},
+            "label": {"type": "string", "default": None},
+        },
+        "required": ["element_id", "from_row", "from_col", "to_row", "to_col"],
+    },
+
     # ── Collection operations ─────────────────────────────────────────────────
 
     {
@@ -466,6 +532,7 @@ _TOOL_GROUPS = {
     "## Pointer tools": ["add_pointer", "move_pointer"],
     "## Cell / value operations": [
         "highlight_cells", "swap_cells", "set_cell_value",
+        "set_grid_cell", "highlight_grid_cells", "draw_grid_arrow",
     ],
     "## Collection operations": [
         "push_stack", "pop_stack",

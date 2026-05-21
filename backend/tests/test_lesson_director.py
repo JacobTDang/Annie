@@ -443,6 +443,131 @@ def test_camera_tools_handlers_exist_on_executor():
     assert callable(getattr(ToolExecutor, "_tool_zoom_out", None))
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 1 — Grid-aware DP tools (Item: grid-arrow-primitive)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_grid_tools_in_visual_catalog():
+    """The three new grid tools must be registered + grouped correctly."""
+    from schemas.tools import VISUAL_TOOLS, VALID_TOOL_NAMES, _TOOL_GROUPS
+    for name in ["set_grid_cell", "highlight_grid_cells", "draw_grid_arrow"]:
+        assert name in VALID_TOOL_NAMES, f"missing tool: {name}"
+        spec = next((t for t in VISUAL_TOOLS if t["name"] == name), None)
+        assert spec is not None, f"tool {name} not in VISUAL_TOOLS list"
+        assert "description" in spec and "parameters" in spec
+    # Grouped under the cell/value bucket for the prompt catalog
+    cell_group = _TOOL_GROUPS["## Cell / value operations"]
+    for name in ["set_grid_cell", "highlight_grid_cells", "draw_grid_arrow"]:
+        assert name in cell_group
+
+
+def test_grid_tools_handlers_exist_on_executor():
+    from scenes.tool_executor import ToolExecutor
+    assert callable(getattr(ToolExecutor, "_tool_set_grid_cell", None))
+    assert callable(getattr(ToolExecutor, "_tool_highlight_grid_cells", None))
+    assert callable(getattr(ToolExecutor, "_tool_draw_grid_arrow", None))
+
+
+def test_grid_tools_noop_when_element_missing():
+    """Tools must silently no-op when the element_id isn't a grid (or
+    doesn't exist). The dispatch wrapper logs but doesn't raise."""
+    from scenes.tool_executor import ToolExecutor
+
+    class _SceneStub:
+        def __init__(self):
+            self.plays = []
+        def play(self, *args, **kwargs):
+            self.plays.append(kwargs.get("run_time"))
+
+    sc = _SceneStub()
+    ex = ToolExecutor(sc)
+    # No grid registered under "missing" — every tool should bail
+    ex._tool_set_grid_cell("missing", 0, 0, "1")
+    ex._tool_highlight_grid_cells("missing", [[0, 0]], "YELLOW")
+    ex._tool_draw_grid_arrow("missing", 0, 0, 1, 0)
+    assert sc.plays == []
+
+
+def test_grid_tools_bounds_check():
+    """Out-of-range (r, c) coordinates must not crash. Real LLM output
+    occasionally has off-by-one errors — graceful no-op is the contract."""
+    from scenes.tool_executor import ToolExecutor
+    from scenes.dsa_primitives import GridPanel
+
+    class _SceneStub:
+        def __init__(self): self.plays = []
+        def play(self, *args, **kwargs): self.plays.append(args)
+
+    sc = _SceneStub()
+    ex = ToolExecutor(sc)
+    grid = GridPanel([["0", "0"], ["0", "0"]])
+    ex.state["g"] = grid
+
+    before = len(sc.plays)
+    ex._tool_set_grid_cell("g", 99, 99, "x")    # row OOB
+    ex._tool_set_grid_cell("g", 0, 99, "x")     # col OOB
+    ex._tool_draw_grid_arrow("g", 0, 0, 5, 5)   # to OOB
+    ex._tool_draw_grid_arrow("g", -1, 0, 0, 0)  # from OOB
+    # Each rejected call adds 0 plays
+    assert len(sc.plays) == before
+
+
+def test_grid_arrow_picks_appropriate_edge_anchors():
+    """GridArrow.between must choose top/bottom/left/right edge anchors
+    based on relative position so the arrowhead doesn't overlap text."""
+    from scenes.dsa_primitives import GridPanel, GridArrow
+
+    grid = GridPanel([["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"]])
+
+    # Vertical: dp[0][1] → dp[1][1] (down)
+    arrow_down = GridArrow.between(grid, (0, 1), (1, 1))
+    assert arrow_down is not None
+
+    # Horizontal: dp[1][0] → dp[1][1] (right)
+    arrow_right = GridArrow.between(grid, (1, 0), (1, 1))
+    assert arrow_right is not None
+
+    # Diagonal: dp[0][0] → dp[1][1]
+    arrow_diag = GridArrow.between(grid, (0, 0), (1, 1))
+    assert arrow_diag is not None
+
+    # Labeled arrow returns a VGroup containing the arrow + label
+    from manim import VGroup
+    labeled = GridArrow.between(grid, (0, 0), (1, 1), label="diag")
+    assert isinstance(labeled, VGroup)
+
+
+def test_show_grid_accepts_2d_or_flat_values():
+    """Bug fix regression: previously _tool_show_grid passed (rows, cols,
+    flat) to GridPanel(values, position, cell_size), silently erroring.
+    Now it reshapes flat → 2D (or passes 2D through unchanged)."""
+    from scenes.tool_executor import ToolExecutor
+
+    plays: list = []
+
+    class _SceneStub:
+        def play(self, *args, **kwargs): plays.append(args)
+
+    ex = ToolExecutor(_SceneStub())
+
+    # Path 1: flat values + rows/cols → reshape
+    ex._tool_set_caption = lambda **kw: None  # bypass unrelated
+    ex._tool_show_grid(rows=2, cols=3, values=[1, 2, 3, 4, 5, 6],
+                       element_id="flat")
+    assert "flat" in ex.state
+    assert ex.state["flat"].rows == 2
+    assert ex.state["flat"].cols == 3
+
+    # Path 2: already-2D values → pass through
+    plays.clear()
+    ex._tool_show_grid(rows=2, cols=2, values=[["a", "b"], ["c", "d"]],
+                       element_id="2d")
+    assert "2d" in ex.state
+    assert ex.state["2d"].rows == 2
+    assert ex.state["2d"].cols == 2
+
+
 def test_camera_tools_noop_when_camera_lacks_frame():
     """Camera tools must silently no-op on a plain Scene that has no .frame.
 
